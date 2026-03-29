@@ -492,6 +492,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "charge_mode": self.charge_mode,
             "target_soc": self.target_soc,
             "target_kwh": self.target_kwh,
+            "active_vehicle_name": self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None,
         }
         if state and state.session_start:
             data["session_start"] = state.session_start.isoformat()
@@ -526,6 +527,14 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 self.target_soc = float(data["target_soc"])
             if data.get("target_kwh") is not None:
                 self.target_kwh = float(data["target_kwh"])
+            saved_vehicle = data.get("active_vehicle_name")
+            if saved_vehicle:
+                match = next((v for v in self._vehicles if v.get(VEHICLE_NAME) == saved_vehicle), None)
+                if match:
+                    self.set_active_vehicle(match)
+                    _LOGGER.info("[Store] Återställde aktivt fordon: %s", saved_vehicle)
+                else:
+                    _LOGGER.warning("[Store] Sparat fordon '%s' finns inte längre i konfigurationen", saved_vehicle)
             _LOGGER.info("[Store] Laddade state: cable=%s tx=%s cost=%.2f energy=%.3f mode=%s",
                          self.ocpp.state.cable_connected, self.ocpp.state.transaction_id,
                          self.ocpp.state.accumulated_cost, self.ocpp.state.energy_kwh,

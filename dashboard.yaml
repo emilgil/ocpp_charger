@@ -46,8 +46,7 @@ views:
                   yellow: 30
                   red: 0
               - type: gauge
-                # TODO: byt till rätt entitet för Skoda
-                entity: sensor.skoda_ev_battery_level
+                entity: sensor.skoda_enyaq_battery_percentage
                 name: Skoda
                 min: 0
                 max: 100
