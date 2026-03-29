@@ -170,9 +170,10 @@ SOC_UNITS        = [SOC_UNIT_PERCENT, SOC_UNIT_KWH]
 SWITCH_ALLOW_DAY_CHARGING  = "allow_day_charging"
 
 # Actionable notification actions
-NOTIFY_ACTION_USE_DAY   = "ocpp_use_day_charging"
-NOTIFY_ACTION_USE_NIGHT = "ocpp_use_night_charging"
-NOTIFY_ACTION_DISMISS   = "ocpp_dismiss_day_charging"
+NOTIFY_ACTION_USE_DAY        = "ocpp_use_day_charging"
+NOTIFY_ACTION_USE_NIGHT      = "ocpp_use_night_charging"
+NOTIFY_ACTION_DISMISS        = "ocpp_dismiss_day_charging"
+NOTIFY_ACTION_SELECT_VEHICLE = "ocpp_select_vehicle_"  # prefix; append vehicle index
 
 # Cumulative cost sensor
 SENSOR_TOTAL_COST = "total_charging_cost"

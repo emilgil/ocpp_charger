@@ -61,6 +61,7 @@ from .const import (
     NOTIFY_ACTION_USE_DAY,
     NOTIFY_ACTION_USE_NIGHT,
     NOTIFY_ACTION_DISMISS,
+    NOTIFY_ACTION_SELECT_VEHICLE,
     PLANNER_ALGO_GREEDY,
     PLANNER_ALGO_CONTIGUOUS,
     CONF_SOC_UNIT,
@@ -152,6 +153,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinator._update_charge_plan()
             coordinator.async_set_updated_data(coordinator.ocpp.state)
             coordinator.notifier.dismiss_day_night_notification()
+        elif action.startswith(NOTIFY_ACTION_SELECT_VEHICLE):
+            idx_str = action[len(NOTIFY_ACTION_SELECT_VEHICLE):]
+            try:
+                idx = int(idx_str)
+                vehicles = coordinator._vehicles
+                if 0 <= idx < len(vehicles):
+                    vehicle = vehicles[idx]
+                    _LOGGER.info("[Notify] User selected vehicle: %s", vehicle.get(VEHICLE_NAME, idx))
+                    coordinator.set_active_vehicle(vehicle)
+                    coordinator._update_charge_plan()
+                    coordinator.async_set_updated_data(coordinator.ocpp.state)
+            except ValueError:
+                _LOGGER.warning("[Notify] Invalid vehicle index in action: %s", action)
 
     entry.async_on_unload(
         hass.bus.async_listen("mobile_app_notification_action", _handle_notification_action)
@@ -1287,6 +1301,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 estimated_cost_sek=plan.estimated_cost_sek if plan else None,
                 vehicle_name=_veh.get(VEHICLE_NAME, "") if _veh else "",
                 detection_reason=self._last_detection_reason,
+                vehicles=self._vehicles,
             )
 
         # ── Charging started ─────────────────────────────────────────────

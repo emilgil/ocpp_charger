@@ -39,8 +39,11 @@ class ChargerNotifier:
         estimated_cost_sek: float | None,
         vehicle_name: str = "",
         detection_reason: str = "",
+        vehicles: list | None = None,
     ) -> None:
-        """Notify when cable is plugged in."""
+        """Notify when cable is plugged in. Actionable if multiple vehicles configured."""
+        from .const import NOTIFY_ACTION_SELECT_VEHICLE, VEHICLE_NAME
+
         header = "🔌 Laddkabel inkopplad"
         if vehicle_name:
             header += f" – {vehicle_name}"
@@ -64,7 +67,40 @@ class ChargerNotifier:
         if estimated_cost_sek is not None:
             lines.append(f"Beräknad kostnad: {estimated_cost_sek:.2f} SEK")
 
-        self._send("EV Laddning – Inkopplad", "\n".join(lines))
+        # Build vehicle-select actions if more than one vehicle is configured
+        actions = []
+        if vehicles and len(vehicles) > 1:
+            lines.append("Välj fordon:")
+            for i, v in enumerate(vehicles):
+                name = v.get(VEHICLE_NAME, f"Fordon {i+1}")
+                marker = " ✓" if name == vehicle_name else ""
+                actions.append({
+                    "action": f"{NOTIFY_ACTION_SELECT_VEHICLE}{i}",
+                    "title": f"{name}{marker}",
+                })
+
+        if not self.enabled or not self.notify_target:
+            return
+        try:
+            payload: dict = {
+                "title": "EV Laddning – Inkopplad",
+                "message": "\n".join(lines),
+            }
+            if actions:
+                payload["data"] = {
+                    "tag": "ocpp_cable_connected",
+                    "actions": actions,
+                }
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify",
+                    self.notify_target.replace("notify.", "", 1),
+                    payload,
+                )
+            )
+            _LOGGER.info("[Notify] EV Laddning – Inkopplad: %s", "\n".join(lines))
+        except Exception as err:
+            _LOGGER.warning("[Notify] Failed to send cable-connected notification: %s", err)
 
     def on_charging_started(
         self,
