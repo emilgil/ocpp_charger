@@ -1,0 +1,158 @@
+title: EV Laddning
+views:
+  - title: Laddning
+    path: ev-charger
+    icon: mdi:ev-station
+    cards:
+
+      # ── 1. STATUSPANEL ────────────────────────────────────────────────────
+      - type: glance
+        show_name: true
+        show_icon: true
+        show_state: true
+        columns: 5
+        entities:
+          - entity: binary_sensor.ev_charger_garocs_48671aa056e80_charger_connected
+            name: Laddbox
+          - entity: binary_sensor.ev_charger_garocs_48671aa056e80_cable_connected
+            name: Kabel
+          - entity: binary_sensor.ev_charger_garocs_48671aa056e80_charging
+            name: Laddar
+          - entity: sensor.ev_charger_garocs_48671aa056e80_status
+            name: Status
+          - entity: sensor.ev_charger_garocs_48671aa056e80_charging_period
+            name: Schema
+
+      # ── 2. FORDON & BATTERI ───────────────────────────────────────────────
+      - type: vertical-stack
+        cards:
+          - type: entities
+            title: Fordon
+            entities:
+              - entity: select.ev_charger_garocs_48671aa056e80_active_vehicle
+                name: Aktivt fordon
+
+          - type: horizontal-stack
+            cards:
+              - type: gauge
+                entity: sensor.e_niro_ev_battery_level
+                name: Kia eNiro
+                min: 0
+                max: 100
+                unit: "%"
+                needle: true
+                severity:
+                  green: 60
+                  yellow: 30
+                  red: 0
+              - type: gauge
+                # TODO: byt till rätt entitet för Skoda
+                entity: sensor.skoda_ev_battery_level
+                name: Skoda
+                min: 0
+                max: 100
+                unit: "%"
+                needle: true
+                severity:
+                  green: 60
+                  yellow: 30
+                  red: 0
+
+      # ── 3. AKTIV SESSION ──────────────────────────────────────────────────
+      - type: horizontal-stack
+        cards:
+          - type: entities
+            title: Effekt & Ström
+            entities:
+              - entity: sensor.ev_charger_garocs_48671aa056e80_charging_power
+                name: Effekt
+              - entity: sensor.ev_charger_garocs_48671aa056e80_charging_current
+                name: Ström
+              - entity: sensor.ev_charger_garocs_48671aa056e80_current_electricity_price
+                name: Spotpris
+
+          - type: entities
+            title: Session
+            entities:
+              - entity: sensor.ev_charger_garocs_48671aa056e80_session_energy
+                name: Laddad energi
+              - entity: sensor.ev_charger_garocs_48671aa056e80_session_cost
+                name: Kostnad
+              - entity: sensor.ev_charger_garocs_48671aa056e80_charging_time
+                name: Laddtid
+              - entity: sensor.ev_charger_garocs_48671aa056e80_estimated_charge_time_remaining
+                name: Återstår
+              - entity: sensor.ev_charger_garocs_48671aa056e80_estimated_completion
+                name: Klar
+
+      # ── 4. STYRNING ───────────────────────────────────────────────────────
+      - type: vertical-stack
+        cards:
+          - type: entities
+            title: Styrning
+            entities:
+              - entity: select.ev_charger_garocs_48671aa056e80_charging_mode
+                name: Laddläge
+              - entity: number.ev_charger_garocs_48671aa056e80_target_battery_level
+                name: Laddmål %
+              - entity: switch.ev_charger_garocs_48671aa056e80_allow_day_charging
+                name: Tillåt dagladdning
+
+          - type: horizontal-stack
+            cards:
+              - type: button
+                name: Start
+                icon: mdi:play-circle
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target:
+                    entity_id: button.ev_charger_garocs_48671aa056e80_start_charging
+              - type: button
+                name: Stopp
+                icon: mdi:stop-circle
+                tap_action:
+                  action: call-service
+                  service: button.press
+                  target:
+                    entity_id: button.ev_charger_garocs_48671aa056e80_stop_charging
+
+      # ── 5. SCHEMA ─────────────────────────────────────────────────────────
+      - type: entities
+        title: Schema
+        entities:
+          - entity: switch.ev_charger_garocs_48671aa056e80_override_charging_schedule
+            name: Manuell override
+          - entity: number.ev_charger_garocs_48671aa056e80_max_charging_current
+            name: Max ström (A)
+          - type: conditional
+            conditions:
+              - entity: switch.ev_charger_garocs_48671aa056e80_override_charging_schedule
+                state: "on"
+            row:
+              entity: number.ev_charger_garocs_48671aa056e80_override_current
+              name: Override-ström (A)
+
+      # ── 6. LADDPLAN (visas bara i Smart-läge) ─────────────────────────────
+      - type: conditional
+        conditions:
+          - entity: select.ev_charger_garocs_48671aa056e80_charging_mode
+            state: Smart
+        card:
+          type: entities
+          title: Laddplan
+          entities:
+            - entity: sensor.ev_charger_garocs_48671aa056e80_planned_charge_start
+              name: Planerad start
+            - entity: sensor.ev_charger_garocs_48671aa056e80_planned_charge_end
+              name: Planerad slut
+            - entity: sensor.ev_charger_garocs_48671aa056e80_estimated_charge_cost
+              name: Beräknad kostnad
+            - entity: sensor.ev_charger_garocs_48671aa056e80_charge_goal_achievable
+              name: Laddmål möjligt
+            - entity: sensor.ev_charger_garocs_48671aa056e80_chargeable_amount
+              name: Uppnåelig andel
+            - entity: sensor.ev_charger_garocs_48671aa056e80_planner_savings
+              name: Besparing (Greedy vs Contiguous)
+            - entity: select.ev_charger_garocs_48671aa056e80_planning_algorithm
+              name: Algoritm
