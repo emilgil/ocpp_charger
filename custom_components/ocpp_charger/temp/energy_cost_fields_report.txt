@@ -1,0 +1,147 @@
+ENERGI/KOSTNADS-FÄLT I OCPP_CHARGER-INTEGRATIONEN
+==================================================
+Genererad: 2026-03-18
+
+1. ocpp_client.py — ChargerState (dataclass)
+---------------------------------------------
+
+Definierade fält (rad 55–69):
+  energy_kwh            float           Session-energi i kWh
+  total_energy_kwh      float           Total mätaravläsning
+  session_energy_start  Optional[float] Mätarstart vid StartTransaction
+  accumulated_cost      float           Sessionskostnad i SEK
+  total_cost            float           Kumulativ kostnad över alla sessioner
+
+Sätts:
+  energy_kwh
+    - Nollställs vid StartTransaction (rad 270)
+    - Beräknas vid StopTransaction: meter_stop - session_energy_start (rad 294)
+    - Uppdateras löpande i MeterValues: kwh - session_energy_start (rad 356)
+    - Nollställs vid recovered session (rad 391)
+
+  total_energy_kwh
+    - Sätts i MeterValues från Energy.Active.Import.Register (rad 352)
+
+  session_energy_start
+    - Sätts vid StartTransaction från meterStart (rad 272)
+    - Sätts vid recovered session (rad 390)
+
+  accumulated_cost
+    - Nollställs vid StartTransaction (rad 271)
+    - Adderas till total_cost vid StopTransaction (rad 303)
+
+  total_cost
+    - Adderas med accumulated_cost vid StopTransaction (rad 303)
+
+
+2. __init__.py — OCPPCoordinator
+---------------------------------
+
+Egna fält:
+  _last_cost_energy_kwh   float   Senaste energivärde vid kostnadsuppdatering (rad 350)
+
+Sätter ChargerState-fält:
+  accumulated_cost
+    - Inkrementellt i _update_cost(): delta_kwh * (pris / 100) (rad 876)
+    - Nollställs vid _handle_cable_connected (rad 1154)
+
+  energy_kwh
+    - Via REST-payload (rad 966)
+
+  _last_cost_energy_kwh
+    - Nollställs vid ny session (rad 1155, 1181)
+    - Uppdateras i _update_cost() (rad 877)
+    - Laddas från store (rad 485)
+
+Läser ChargerState-fält:
+  energy_kwh
+    - _update_cost() rad 866               Beräkna delta för kostnad
+    - _estimate_completion() rad 655        Beräkna SOC
+    - _update_smart_charging() rad 807-817  Kolla om energimål nåtts
+    - _handle_charging_stopped rad 1209     Spara i stopp-notis
+    - _check_target_reached() rad 1256      Kolla kWh-mål
+    - _fire_session_event() rad 994         Event-data
+    - notiser rad 844, 902                  session_kwh param
+
+  accumulated_cost
+    - _save_state() rad 456                 Persistens
+    - _update_cost() rad 882                Loggning
+    - _handle_charging_stopped rad 1210     Stopp-notis
+    - _fire_session_event() rad 995         Event-data
+
+  total_cost
+    - _save_state() rad 461                 Persistens
+
+  session_energy_start
+    - _save_state() rad 458                 Persistens
+
+Persistens (store):
+  Sparas: accumulated_cost, energy_kwh, session_energy_start, total_cost (rad 456-461)
+  Laddas: Samma fält (rad 479-485)
+
+
+3. sensor.py — Sensorentiteter
+-------------------------------
+
+  SessionEnergySensor         state.energy_kwh, state.session_energy_start   rad 181-183
+  SessionCostSensor           state.accumulated_cost                         rad 442
+  TotalChargingCostSensor     state.total_cost                               rad 460
+  EstimatedChargeCostSensor   plan.estimated_cost_sek                        rad 423-424
+  ChargeGoalSensor            plan.energy_kwh                                rad 523, 536, 539
+  PlannerSavingsSensor        plan.estimated_cost_sek, alt.estimated_cost_sek rad 565-568, 578, 582
+  PlannedChargeStartSensor    plan.energy_kwh, plan.estimated_cost_sek (attrs) rad 371-372
+
+
+4. charge_planner.py — ChargePlan
+-----------------------------------
+
+Dataclass ChargePlan (rad 33-38):
+  energy_kwh          float
+  estimated_cost_sek  float
+  avg_price_ore_kwh   float
+
+Interna slot-fält (dict):
+  s["energy_kwh"]   energi per slot (sätts rad 259, läses rad 108, 113, 151, 155-156, 167, 185, 285, 325)
+  s["cost"]         kostnad per slot (läses rad 152, 157, 286)
+
+Sätts:
+  energy_kwh / estimated_cost_sek
+    - Beräknas från valda slots (rad 317-318)
+    - Sätts till 0 vid infeasible (rad 233, 266, 278)
+
+Läses från:
+  __init__.py   rad 807-808, 817, 1161-1162, 1438, 1442
+  sensor.py     se ovan
+  notifier.py   som parametrar
+
+
+5. notifier.py
+---------------
+
+Tar emot värden som parametrar (sätter inget själv):
+
+  on_cable_connected()       energy_kwh, estimated_cost_sek           rad 38-39
+  on_charging_stopped()      energy_kwh, actual_cost_sek              rad 88-89
+  on_daily_price_summary()   day_cost, night_cost                     rad 109, 113
+
+
+6. const.py
+------------
+
+  SENSOR_TOTAL_COST = "total_charging_cost"   rad 178
+
+
+DATAFLÖDE (sammanfattning)
+===========================
+
+MeterValues (OCPP)
+  -> ocpp_client.py: energy_kwh, total_energy_kwh, session_energy_start
+    -> __init__.py: _update_cost() beräknar accumulated_cost via delta_kwh x elpris
+      -> sensor.py: SessionEnergySensor, SessionCostSensor, TotalChargingCostSensor
+      -> notifier.py: skickar värden i notiser
+      -> store: persisterar alla fält mellan omstarter
+
+charge_planner.py: beräknar energy_kwh, estimated_cost_sek för planen
+  -> __init__.py: använder för auto-start/stop och målkontroll
+  -> sensor.py: EstimatedChargeCostSensor, PlannerSavingsSensor, ChargeGoalSensor
+  -> notifier.py: on_cable_connected meddelar planens kostnad

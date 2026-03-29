@@ -1,0 +1,71 @@
+rest_call:
+  name: REST API Call
+  description: >
+    Make a direct HTTP request to the EV charger's REST API.
+    The response is fired as an event: ocpp_charger_rest_response.
+  fields:
+    method:
+      name: Method
+      description: HTTP method to use.
+      required: true
+      default: GET
+      selector:
+        select:
+          options: [GET, POST, PUT, DELETE, PATCH]
+    endpoint:
+      name: Endpoint
+      description: >
+        Path relative to the configured base URL, e.g. /status or /settings/maxCurrent.
+      required: true
+      example: /status
+      selector:
+        text:
+    params:
+      name: Query Parameters
+      description: Optional key/value pairs added as query string parameters.
+      required: false
+      example: '{"key": "value"}'
+      selector:
+        object:
+    body:
+      name: Request Body
+      description: Optional request body (dict for JSON, string for plain text).
+      required: false
+      example: '{"maxCurrent": 16}'
+      selector:
+        object:
+
+change_configuration:
+  name: Change Configuration
+  description: >
+    Send a ChangeConfiguration command to the charger. Result is fired as
+    event 'ocpp_charger_ocpp_response'. Useful for testing charger settings.
+  fields:
+    key:
+      name: Key
+      description: Configuration key (e.g. MaxCurrentValue, HeartbeatInterval)
+      required: true
+      example: "MaxCurrentValue"
+      selector:
+        text:
+    value:
+      name: Value
+      description: Configuration value (always sent as string)
+      required: true
+      example: "6"
+      selector:
+        text:
+
+get_configuration:
+  name: Get Configuration
+  description: >
+    Send a GetConfiguration command to read charger settings. Result is fired
+    as event 'ocpp_charger_ocpp_response'. Leave key empty to get all keys.
+  fields:
+    key:
+      name: Key
+      description: Configuration key to read (leave empty for all)
+      required: false
+      example: "MaxCurrentValue"
+      selector:
+        text:

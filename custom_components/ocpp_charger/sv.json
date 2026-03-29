@@ -1,0 +1,146 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure OCPP Charger",
+        "description": "Enter connection details for your charger.",
+        "data": {
+          "host": "IP Address",
+          "port": "Port",
+          "charger_id": "Charger ID (OCPP)",
+          "mqtt_topic_prefix": "MQTT topic prefix",
+          "electricity_price_entity": "Electricity price entity (öre/kWh)",
+          "max_current": "Max charging current (A)",
+          "num_phases": "Number of phases"
+        }
+      },
+      "add_vehicle": {
+        "title": "Register Vehicle",
+        "description": "{added_vehicles}\nEnter details for the next vehicle.",
+        "data": {
+          "name": "Vehicle name",
+          "capacity_kwh": "Battery capacity (kWh)",
+          "soc_entity": "Battery level (SOC) entity – optional",
+          "add_another": "What would you like to do next?"
+        }
+      },
+      "schedule": {
+        "title": "Charging Current Schedule",
+        "description": "Define day and night current limits.",
+        "data": {
+          "schedule_day_start": "Day period start (HH:MM)",
+          "schedule_night_start": "Night period start (HH:MM)",
+          "schedule_day_current_a": "Day current limit (A)",
+          "schedule_night_current_a": "Night current limit (A)"
+        }
+      },
+      "initial_notify": {
+        "title": "Aviseringar & prissättning",
+        "description": "Konfigurera pushnotiser och elprisentitet.",
+        "data": {
+          "price_forecast_entity": "Prisentitet (t.ex. sensor.gespot_current_price_se3)",
+          "notify_enabled": "Aktivera notiser",
+          "notify_target": "Notismåltjänst (notify.xxx)",
+          "notify_on_connect": "Notis vid inkoppling",
+          "notify_on_start": "Notis vid laddstart",
+          "notify_on_stop": "Notis vid laddstopp"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the charger",
+      "invalid_host": "Invalid IP address",
+      "vehicle_name_required": "Vehicle name is required",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This charger is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Manage Vehicles & Schedule",
+        "description": "Registered vehicles:\n{vehicle_list}",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "add_vehicle": {
+        "title": "Add Vehicle",
+        "data": {
+          "name": "Vehicle name",
+          "capacity_kwh": "Battery capacity (kWh)",
+          "soc_entity": "Battery level (SOC) entity – optional",
+          "soc_unit": "SOC-enhet (procent eller kWh)"
+        }
+      },
+      "edit_vehicle": {
+        "title": "Edit Vehicle",
+        "data": {
+          "name": "Vehicle name",
+          "capacity_kwh": "Battery capacity (kWh)",
+          "soc_entity": "Battery level (SOC) entity – optional",
+          "soc_unit": "SOC-enhet (procent eller kWh)"
+        }
+      },
+      "remove_vehicle": {
+        "title": "Remove Vehicle",
+        "description": "Are you sure you want to remove {vehicle}?",
+        "data": {
+          "confirm": "Yes, remove"
+        }
+      },
+      "edit_schedule": {
+        "title": "Edit Charging Schedule",
+        "data": {
+          "schedule_day_start": "Day period start (HH:MM)",
+          "schedule_night_start": "Night period start (HH:MM)",
+          "schedule_day_current_a": "Day current limit (A)",
+          "schedule_night_current_a": "Night current limit (A)"
+        }
+      },
+      "edit_mqtt": {
+        "title": "Edit MQTT Topic Prefix",
+        "description": "The prefix used for all MQTT topics. Example: 'ocpp' gives topics like 'ocpp/CP001/state'.",
+        "data": {
+          "mqtt_topic_prefix": "MQTT topic prefix"
+        }
+      },
+      "edit_rest": {
+        "title": "REST API Settings",
+        "description": "Configure direct HTTP access to the charger's REST API.",
+        "data": {
+          "rest_base_url": "Base URL (e.g. http://192.168.1.100/api)",
+          "rest_auth_type": "Authentication type (none / basic / bearer)",
+          "rest_username": "Username (Basic auth)",
+          "rest_password": "Password (Basic auth)",
+          "rest_bearer_token": "Bearer token"
+        }
+      },
+      "edit_notify": {
+        "title": "Notification Settings",
+        "description": "Configure push notifications via the Home Assistant app.",
+        "data": {
+          "notify_enabled": "Enable notifications",
+          "notify_target": "Notification target (notify service)",
+          "notify_on_connect": "Notify on cable connect (planned start/end + cost)",
+          "notify_on_start": "Notify when charging starts",
+          "notify_on_stop": "Notify when charging stops (energy + actual cost)",
+          "send_test_notification": "Skicka en testnotis nu (bocka i och spara)"
+        }
+      },
+      "edit_planner": {
+        "title": "Charge Planner Settings",
+        "description": "Configure the optimal charge window calculator.",
+        "data": {
+          "price_forecast_entity": "Price forecast entity (e.g. sensor.gespot_current_price_se3)"
+        }
+      }
+    },
+    "error": {
+      "rest_username_required": "Username is required for Basic auth",
+      "rest_token_required": "Bearer token is required for Bearer auth"
+    }
+  }
+}
