@@ -1,4 +1,48 @@
-# Ändringslogg – OCPP Charger (2026-03-18)
+# Ändringslogg – OCPP Charger
+
+## 2026-03-20: Multi-session stabilitet (Fix 7–10)
+
+### Fix 7 – Planeraren räknar om från noll efter varje delstopp
+
+**Problem:** Nattladdningen skapade 5–6 separata laddningssessioner istället för en sammanhängande. Planeraren räknade om planen efter varje 30-min delstopp eftersom `state.energy_kwh` nollställdes vid varje ny OCPP-transaktion.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `__init__()` | Nytt fält `_session_total_kwh: float`. |
+| `__init__.py` | `_check_notify_events()` | Nollställs vid Available, ackumulerar föregående delsessions energi vid Preparing. |
+| `__init__.py` | `_update_charge_plan()` | `already_charged_kwh = _session_total_kwh + state.energy_kwh` subtraheras från `energy_needed`. |
+
+### Fix 8 – Dubbel RemoteStop inom sekunder
+
+**Problem:** Två update-cykler triggade ibland `remote_stop_transaction()` inom 1–2 sekunder av varandra.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `__init__()` | Nytt fält `_last_remote_stop: datetime | None`. |
+| `__init__.py` | `_update_smart_charging()` | Guard: hoppar över RemoteStop om < 15s sedan senaste. |
+
+### Fix 9 – Upprepad "Inkopplad"-notis under natt-cykeln
+
+**Problem:** "Inkopplad"-notisen skickades vid varje OCPP-delsession (Preparing) under natten, inte bara en gång per kabelinkoppling.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `__init__()` | Nytt fält `_cable_session_notified_connect: bool`. |
+| `__init__.py` | `_check_notify_events()` | Guard mot bool-flagga istället för session_id-jämförelse. Nollställs vid Available. |
+
+### Fix 10 – Periodisk SOC-omläsning de första 30 minuterna efter inkoppling
+
+**Problem:** Bilappen uppdaterade SOC med fördröjning efter körning. Planeraren beräknade `energy_needed` från gammal SOC som råkade vara i HA vid inkoppling.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `__init__()` | Nya fält `_cable_connect_time`, `_soc_at_connect`, `_soc_reread_done`. |
+| `__init__.py` | `_check_soc_reread()` | Ny metod. Körs varje 10s i upp till 30 min efter Preparing. Vid ΔSoC ≥ 5 pp → omberäknar planen. |
+| `__init__.py` | `_async_update_data()` | Anropar `_check_soc_reread()` efter SOC-uppdatering. |
+
+---
+
+## 2026-03-18: Kabelsession-modell och SuspendedEV-hantering
 
 ## 2026-03-18: Kabelsession-modell och SuspendedEV-hantering
 

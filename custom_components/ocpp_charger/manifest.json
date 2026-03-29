@@ -2,8 +2,8 @@
   "domain": "ocpp_charger",
   "name": "OCPP EV Charger",
   "version": "1.2.0",
-  "documentation": "https://github.com/your-repo/ocpp_charger",
-  "issue_tracker": "https://github.com/your-repo/ocpp_charger/issues",
+  "documentation": "https://github.com/emilgil/ocpp_charger",
+  "issue_tracker": "https://github.com/emilgil/ocpp_charger/issues",
   "requirements": [
     "websockets>=11.0"
   ],

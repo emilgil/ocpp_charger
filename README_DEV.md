@@ -165,6 +165,7 @@ _alt_plan: ChargePlan | None              # alternativ plan för jämförelse
 | ChargeGoalAchievableSensor | charge_goal_achievable | Charge Goal Achievable |
 | ChargeCapacitySensor | charge_capacity | Chargeable Amount |
 | PlannerSavingsSensor | planner_savings | Planner Savings |
+| TotalChargingCostSensor | total_charging_cost | Total Charging Cost |
 
 ### Binära sensorer (3 st)
 | Klass | Unique suffix | Namn |

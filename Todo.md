@@ -420,7 +420,7 @@ startas om under natten mellan planfönster 1 och 2).
 
 ---
 
-## Fix 7 – Planeraren räknar om från noll efter varje delstopp (2026-03-20)
+## ✅ Fix 7 – Planeraren räknar om från noll efter varje delstopp (2026-03-20)
 
 **Symptom:** Nattladdningen skapar 5–6 separata laddningssessioner istället för en
 sammanhängande. Planeraren räknar om planen efter varje 30-min delstopp eftersom
@@ -473,7 +473,7 @@ energy_needed = max(0.0, (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARG
 
 ---
 
-## Fix 8 – Dubbel RemoteStop inom sekunder (2026-03-20)
+## ✅ Fix 8 – Dubbel RemoteStop inom sekunder (2026-03-20)
 
 **Symptom:** Två update-cykler triggar ibland `remote_stop_transaction()` inom 1–2
 sekunder av varandra. Ger dubblerade stopp-meddelanden i loggen.
@@ -512,7 +512,7 @@ else:
 
 ---
 
-## Fix 9 – Upprepad "Inkopplad"-notis under natt-cykeln (2026-03-20)
+## ✅ Fix 9 – Upprepad "Inkopplad"-notis under natt-cykeln (2026-03-20)
 
 **Symptom:** "Inkopplad"-notisen skickas vid varje OCPP-delsession (Preparing) under
 natten, inte bara en gång per kabelinkoppling.
@@ -555,7 +555,7 @@ self._cable_session_notified_connect = True
 
 ---
 
-## Fix 10 – Periodisk SOC-omläsning de första 30 minuterna efter inkoppling (2026-03-20)
+## ✅ Fix 10 – Periodisk SOC-omläsning de första 30 minuterna efter inkoppling (2026-03-20)
 
 **Symptom:** Bilappen uppdaterar SOC med fördröjning efter körning. Planeraren
 beräknar `energy_needed` från gammal SOC som råkade vara i HA vid inkoppling.

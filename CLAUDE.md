@@ -34,7 +34,7 @@ custom_components/ocpp_charger/
   ocpp_client.py       – WebSocket OCPP 1.6-server, ChargerState
   config_flow.py       – Setup flow (4 steg) + options flow
   const.py             – Alla konstanter
-  sensor.py            – 20 sensorer
+  sensor.py            – 21 sensorer
   binary_sensor.py     – 3 binära sensorer
   number.py            – 5 number-entiteter
   select.py            – 3 select-entiteter
@@ -119,10 +119,20 @@ _charging_start: Optional[datetime]  # start av nuvarande laddningssegment
 charge_plan: ChargePlan | None
 _last_transaction_start: datetime | None  # för 90s grace period
 _last_remote_start: datetime | None       # för 5 min plan-frysning
+_last_remote_stop: datetime | None        # Fix 8: debounce dubbel RemoteStop (15s)
 _manual_start_requested: bool             # manuell override-flagga
 _notified_connect_session: str | None     # dedup-guard anslutning
 _notified_start_session: str | None       # dedup-guard start
 _notified_stop_session: str | None        # dedup-guard stop
+_cable_session_energy_kwh: float          # ackumulerad energi per kabelsession
+_cable_session_cost_sek: float            # ackumulerad kostnad per kabelsession
+_cable_session_start_notified: bool       # en start-notis per kabelsession
+_cable_session_stop_notified: bool        # en stopp-notis per kabelsession
+_cable_session_notified_connect: bool     # Fix 9: en inkopplad-notis per kabelsession
+_session_total_kwh: float                 # Fix 7: ackumulerad energi sedan kabel in
+_suspended_ev_since: datetime | None      # SuspendedEV-detektion
+_cable_connect_time: datetime | None      # Fix 10: tid för kabelinkoppling
+_soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
 target_soc: float                         # 80.0 default
 battery_capacity_kwh: float               # 64.0 default
 num_phases: int                           # 3
@@ -131,7 +141,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 
 ## Entiteter
 
-### Sensorer (20 st)
+### Sensorer (21 st)
 | Sensor | Beskrivning |
 |--------|-------------|
 | Status | Connector status (Available, Charging, etc.) |
@@ -153,6 +163,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Charge Goal Achievable | True/False |
 | Chargeable Amount | % av laddmål som kan uppnås |
 | Planner Savings | SEK skillnad mellan Greedy och Contiguous |
+| Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
 
 ### Binära sensorer (3 st)
 | Sensor | Beskrivning |

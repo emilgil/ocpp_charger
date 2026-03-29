@@ -69,6 +69,7 @@ En Home Assistant custom component som fungerar som OCPP 1.6 Central System. Lad
 | Charge Goal Achievable | Om laddmålet kan nås till deadline |
 | Chargeable Amount | Andel av laddmålet som kan uppnås (%) |
 | Planner Savings | Skillnad i kostnad mellan Greedy och Contiguous (SEK) |
+| Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
 
 ## Binära sensorer
 
