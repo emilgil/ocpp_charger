@@ -1207,10 +1207,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
     def set_target_soc(self, soc: float) -> None:
         self.target_soc = soc
+        self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
     def set_target_kwh(self, kwh: float) -> None:
         self.target_kwh = kwh
+        self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
     # ------------------------------------------------------------------ #
@@ -1221,6 +1223,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """Set day charging flag and mark as manually overridden for this session."""
         self.allow_day_charging = value
         self._day_charging_manual_override = True
+        self._update_charge_plan()
+        self.async_set_updated_data(self.ocpp.state)
 
     def _compute_allow_day_charging(self, now: datetime | None = None) -> bool:
         """Return True if day charging is allowed based on week schedule.
