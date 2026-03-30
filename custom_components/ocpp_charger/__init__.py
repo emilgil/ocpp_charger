@@ -1198,11 +1198,14 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.battery_capacity_kwh,
             self.soc_entity or "–",
         )
+        self._update_soc_from_ha()
+        self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
     def set_charge_mode(self, mode: str) -> None:
         """Update charge mode."""
         self.charge_mode = mode
+        self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
     def set_target_soc(self, soc: float) -> None:
