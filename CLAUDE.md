@@ -58,6 +58,13 @@ custom_components/ocpp_charger/
 3. **Charge mode = Smart + ingen plan** → priströskel-fallback (40:e percentilen)
 4. **Charge mode = Scheduled** → ladda inom konfigurerad tidsperiod
 
+## Kontrollförändringar → omedelbar omplanering
+Dessa setters anropar `_update_charge_plan()` direkt:
+- `set_target_soc()`, `set_target_kwh()`
+- `set_allow_day_charging()`
+- `set_charge_mode()`
+- `set_active_vehicle()` (även `_update_soc_from_ha()` + reset `_session_total_kwh` vid fordonsbyte)
+
 ## Viktiga skyddsmekanismer
 
 ### Grace period (90s)

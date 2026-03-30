@@ -1,5 +1,60 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-03-30: Fordonsväxling, planering och GitHub-release
+
+### Fordonsval i push-notis
+Inkopplad-notisen (`on_cable_connected`) är nu åtgärdbar med en knapp per fordon om fler än ett fordon är konfigurerat. Knappen för aktivt fordon markeras med ✓. Tryck → `set_active_vehicle()` + omplanering direkt.
+
+| Fil | Ändring |
+|-----|---------|
+| `const.py` | `NOTIFY_ACTION_SELECT_VEHICLE = "ocpp_select_vehicle_"` (prefix + index) |
+| `notifier.py` | `on_cable_connected()` tar emot `vehicles`-lista och bygger `actions`-payload |
+| `__init__.py` | Anropas med `vehicles=self._vehicles`; action-handler hanterar `ocpp_select_vehicle_X` |
+
+### Aktivt fordon persisteras (Fix-A)
+`active_vehicle_name` sparas i HA Storage och återställs vid omstart.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_save_state()` skriver `active_vehicle_name`; `_load_state()` matchar mot `_vehicles` |
+
+### Fix 11 – Vehicle re-detection + session_total_kwh-läcka vid delstopp
+**Problem:** Efter RemoteStop (plan slut, kabel kvar) körde `_check_vehicle_auto_detect()` igen eftersom Garo skickar `Preparing`. Det bytte fordon, och `_session_total_kwh` (19,78 kWh) lades ihop med det nya fordonets energibehov → `energy_needed = 0` → ingen ny plan.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `_check_vehicle_auto_detect()` | Triggar bara vid `Available → Preparing`, inte `Charging → Preparing` |
+| `__init__.py` | `set_active_vehicle()` | Nollställer `_session_total_kwh` vid fordonsbyte |
+
+### Fix 12 – Inaktuellt energy_kwh från föregående session
+**Problem:** `state.energy_kwh` sparas i HA Storage. Efter omstart var värdet kvar från föregående session (19,78 kWh) och subtraherades från energibehovet → `energy_needed = 0` → plan `08:20–08:20`.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `_update_charge_plan()` | `active_tx_energy = energy_kwh if transaction_id is not None else 0.0` |
+
+### Fix 13 – Kontrollförändringar triggade inte omedelbar omplanering
+**Problem:** `set_target_soc`, `set_target_kwh`, `set_allow_day_charging`, `set_charge_mode` och `set_active_vehicle` saknade `_update_charge_plan()`-anrop. Ändringen fick effekt först vid nästa 10s-cykel.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | Alla fem setter-metoder | Lade till `_update_charge_plan()` + `async_set_updated_data()` |
+| `__init__.py` | `set_active_vehicle()` | Lade även till `_update_soc_from_ha()` innan omplanering |
+
+### Per-fordon max laddström
+Nytt fält `max_current_a` (default 0 = använd schemat) i fordonskonfigurationen. Planeraren använder `min(schema_ström, fordonets_max)` om värdet är > 0.
+
+| Fil | Ändring |
+|-----|---------|
+| `const.py` | `VEHICLE_MAX_CURRENT_A = "max_current_a"` |
+| `config_flow.py` | Nytt NumberSelector-fält i `_vehicle_schema()` och alla tre dict-byggen |
+| `__init__.py` | `effective_current = min(schedule_current, vehicle_max_a)` i `_update_charge_plan()` |
+
+### Dashboard
+`dashboard.yaml` skapad med 6 sektioner: status, fordon/SOC, aktiv session, styrning, schema, laddplan (conditional Smart-läge).
+
+---
+
 ## 2026-03-20: Multi-session stabilitet (Fix 7–10)
 
 ### Fix 7 – Planeraren räknar om från noll efter varje delstopp
