@@ -570,7 +570,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         current_status = self.ocpp.state.connector_status
         if (
             current_status == "Preparing"
-            and self._last_connector_status != "Preparing"
+            and self._last_connector_status == "Available"  # only on fresh cable connection
         ):
             # Force SOC refresh from HA entity on cable connect.
             # Keep the previous SOC value so we can sanity-check the new one.
@@ -1175,6 +1175,14 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
     def set_active_vehicle(self, vehicle: dict) -> None:
         """Switch the active vehicle, updating capacity and SOC entity immediately."""
+        prev_name = self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None
+        new_name = vehicle.get(VEHICLE_NAME)
+        if prev_name and prev_name != new_name:
+            _LOGGER.info(
+                "[Vehicle] Switching %s → %s, resetting session_total_kwh (was %.2f kWh)",
+                prev_name, new_name, self._session_total_kwh,
+            )
+            self._session_total_kwh = 0.0
         self.active_vehicle = vehicle
         self.battery_capacity_kwh = float(vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
         self.soc_entity = vehicle.get(VEHICLE_SOC_ENTITY, "")
