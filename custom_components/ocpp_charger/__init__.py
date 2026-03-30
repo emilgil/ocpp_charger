@@ -1500,8 +1500,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
             target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
             battery_capacity = self.battery_capacity_kwh
         soc_needed = max(0.0, target_soc - current_soc)
-        # Fix 7: subtract already-charged energy in this cable session
-        already_charged_kwh = self._session_total_kwh + self.ocpp.state.energy_kwh
+        # Fix 7: subtract already-charged energy in this cable session.
+        # Only include active-transaction energy if a transaction is actually running,
+        # otherwise state.energy_kwh may be a stale value from the previous session.
+        active_tx_energy = self.ocpp.state.energy_kwh if self.ocpp.state.transaction_id is not None else 0.0
+        already_charged_kwh = self._session_total_kwh + active_tx_energy
         energy_needed = max(0.0, (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY - already_charged_kwh)
 
         # Power in kW: use schedule current, capped by vehicle's max current if set
