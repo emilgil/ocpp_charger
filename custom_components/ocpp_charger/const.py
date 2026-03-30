@@ -97,6 +97,7 @@ CONF_ACTIVE_VEHICLE = "active_vehicle"  # index into CONF_VEHICLES list
 # Keys inside each vehicle dict
 VEHICLE_NAME = "name"
 VEHICLE_CAPACITY = "capacity_kwh"
+VEHICLE_MAX_CURRENT_A = "max_current_a"   # 0 = use charger max (default)
 VEHICLE_SOC_ENTITY = "soc_entity"
 
 SELECT_ACTIVE_VEHICLE = "active_vehicle"

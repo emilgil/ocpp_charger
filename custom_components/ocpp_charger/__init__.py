@@ -28,6 +28,7 @@ from .const import (
     CONF_VEHICLES,
     VEHICLE_CAPACITY,
     VEHICLE_NAME,
+    VEHICLE_MAX_CURRENT_A,
     AUTO_DETECT_SOC_TOLERANCE,
     CONF_AUTO_VEHICLE_DETECTION,
     CONF_SCHEDULE_DAY_CURRENT,
@@ -1503,9 +1504,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
         already_charged_kwh = self._session_total_kwh + self.ocpp.state.energy_kwh
         energy_needed = max(0.0, (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY - already_charged_kwh)
 
-        # Power in kW from schedule or max_current
+        # Power in kW: use schedule current, capped by vehicle's max current if set
         voltage = DEFAULT_VOLTAGE
-        power_kw = (self.schedule.current_limit() * voltage * self.num_phases) / 1000.0
+        schedule_current = self.schedule.current_limit()
+        vehicle_max_a = int((self.active_vehicle or {}).get(VEHICLE_MAX_CURRENT_A, 0))
+        effective_current = min(schedule_current, vehicle_max_a) if vehicle_max_a > 0 else schedule_current
+        power_kw = (effective_current * voltage * self.num_phases) / 1000.0
 
         _LOGGER.debug(
             "[ChargePlanner] Planning: soc=%.0f%%→%.0f%% energy=%.2f kWh power=%.1f kW deadline=%s",

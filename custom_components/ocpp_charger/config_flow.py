@@ -50,6 +50,7 @@ from .const import (
     CONF_SOC_ENTITY,
     CONF_SOC_UNIT,
     VEHICLE_SOC_UNIT,
+    VEHICLE_MAX_CURRENT_A,
     SOC_UNITS,
     SOC_UNIT_PERCENT,
     CONF_VEHICLES,
@@ -119,6 +120,9 @@ def _vehicle_schema(defaults: dict | None = None) -> vol.Schema:
                 unit_of_measurement="kWh", mode=NumberSelectorMode.BOX)),
         vol.Optional(VEHICLE_SOC_ENTITY, default=d.get(VEHICLE_SOC_ENTITY, "")): str,
         vol.Optional(VEHICLE_SOC_UNIT, default=d.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT)): vol.In(SOC_UNITS),
+        vol.Optional(VEHICLE_MAX_CURRENT_A, default=d.get(VEHICLE_MAX_CURRENT_A, 0)): NumberSelector(
+            NumberSelectorConfig(min=0, max=32, step=1,
+                unit_of_measurement="A", mode=NumberSelectorMode.BOX)),
     })
 
 
@@ -191,10 +195,11 @@ class OCPPChargerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[VEHICLE_NAME] = "vehicle_name_required"
             else:
                 vehicle = {
-                    VEHICLE_NAME:       name,
-                    VEHICLE_CAPACITY:   float(user_input[VEHICLE_CAPACITY]),
-                    VEHICLE_SOC_ENTITY: user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
-                    VEHICLE_SOC_UNIT: user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
+                    VEHICLE_NAME:         name,
+                    VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
+                    VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
+                    VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
+                    VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 }
                 self._vehicles.append(vehicle)
 
@@ -395,10 +400,11 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 errors[VEHICLE_NAME] = "vehicle_name_required"
             else:
                 self._vehicles.append({
-                    VEHICLE_NAME:       name,
-                    VEHICLE_CAPACITY:   float(user_input[VEHICLE_CAPACITY]),
-                    VEHICLE_SOC_ENTITY: user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
-                    VEHICLE_SOC_UNIT: user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
+                    VEHICLE_NAME:         name,
+                    VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
+                    VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
+                    VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
+                    VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 })
                 return self._save()
 
@@ -421,10 +427,11 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 errors[VEHICLE_NAME] = "vehicle_name_required"
             else:
                 self._vehicles[idx] = {
-                    VEHICLE_NAME:       name,
-                    VEHICLE_CAPACITY:   float(user_input[VEHICLE_CAPACITY]),
-                    VEHICLE_SOC_ENTITY: user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
-                    VEHICLE_SOC_UNIT: user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
+                    VEHICLE_NAME:         name,
+                    VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
+                    VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
+                    VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
+                    VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 }
                 return self._save()
 
