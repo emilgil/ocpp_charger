@@ -626,12 +626,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """
         state = self.ocpp.state
 
-        # 1. OCPP har SOC – spara som källa och avsluta
-        if state.soc_percent is not None and self._soc_source == "ocpp":
-            return
-        # Om OCPP precis började rapportera, uppdatera källa
-        if state.soc_percent is not None and self._soc_source != "ocpp":
-            self._soc_source = "ocpp"
+        # 1. OCPP satte SOC i förra cykeln – behåll värdet, återställ källa så HA-entitet
+        #    kan ta över nästa cykel (Bug 9: förhindrar permanent "ocpp"-låsning)
+        if self._soc_source == "ocpp":
+            self._soc_source = "entity" if self.soc_entity else "none"
             return
 
         # 2. Läs HA-entitet
@@ -686,8 +684,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 self._soc_source = "none"
             return
 
-        # 2b. Entitet tillgänglig under session → använd direkt (t.ex. live från bil-app)
-        if entity_soc is not None and self._soc_source in ("entity", "none"):
+        # 2b. Entitet tillgänglig → använd alltid, även under laddning (Bug 9)
+        if entity_soc is not None:
+            if state.soc_percent != entity_soc:
+                _LOGGER.debug("[SOC] Uppdaterar från HA-entitet: %.1f%% → %.1f%%",
+                    state.soc_percent or 0.0, entity_soc)
             state.soc_percent = entity_soc
             self._soc_source = "entity"
             return
@@ -1199,22 +1200,26 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.soc_entity or "–",
         )
         self._update_soc_from_ha()
+        self._last_plan_update = None  # Bug 5: bypass throttle
         self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
     def set_charge_mode(self, mode: str) -> None:
         """Update charge mode."""
         self.charge_mode = mode
+        self._last_plan_update = None  # Bug 5: bypass throttle
         self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
     def set_target_soc(self, soc: float) -> None:
         self.target_soc = soc
+        self._last_plan_update = None  # Bug 5: bypass throttle
         self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
     def set_target_kwh(self, kwh: float) -> None:
         self.target_kwh = kwh
+        self._last_plan_update = None  # Bug 5: bypass throttle
         self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
@@ -1226,6 +1231,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """Set day charging flag and mark as manually overridden for this session."""
         self.allow_day_charging = value
         self._day_charging_manual_override = True
+        self._last_plan_update = None  # Bug 5: bypass throttle
         self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
@@ -1475,44 +1481,63 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 tzinfo=local_tz,
             )
 
-        # Energy needed – use vehicle with lowest SoC if multiple vehicles configured
+        # Energy needed – multi-vehicle: use active vehicle when cable connected (Bug 6)
         if len(self._vehicles) > 1:
-            # Find vehicle with lowest current SoC from HA entities
-            best_vehicle = None
-            lowest_soc = float("inf")
-            for v in self._vehicles:
-                soc_ent = v.get(VEHICLE_SOC_ENTITY, "")
-                soc_st = self.hass.states.get(soc_ent) if soc_ent else None
-                try:
-                    v_soc = float(soc_st.state) if soc_st else float("inf")
-                except (ValueError, TypeError):
-                    v_soc = float("inf")
-                if v_soc < lowest_soc:
-                    lowest_soc = v_soc
-                    best_vehicle = v
-            if best_vehicle:
-                current_soc = lowest_soc if lowest_soc != float("inf") else 0.0
-                target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
-                battery_capacity = float(best_vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
-                _LOGGER.debug("[ChargePlanner] Multi-vehicle: planning for %s soc=%.0f%%",
-                    best_vehicle.get("name", "?"), current_soc)
-            else:
+            if self.ocpp.state.cable_connected and self.active_vehicle:
+                # Cable connected – plan for the vehicle that is actually charging
                 current_soc = self.ocpp.state.soc_percent or 0.0
                 target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
-                battery_capacity = self.battery_capacity_kwh
+                battery_capacity = float(self.active_vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
+                _LOGGER.debug("[ChargePlanner] Multi-vehicle: cable connected, planning for active vehicle %s soc=%.0f%%",
+                    self.active_vehicle.get(VEHICLE_NAME, "?"), current_soc)
+            else:
+                # No cable – pick vehicle with lowest SoC to show upcoming charging need
+                best_vehicle = None
+                lowest_soc = float("inf")
+                for v in self._vehicles:
+                    soc_ent = v.get(VEHICLE_SOC_ENTITY, "")
+                    soc_st = self.hass.states.get(soc_ent) if soc_ent else None
+                    try:
+                        v_soc = float(soc_st.state) if soc_st else float("inf")
+                    except (ValueError, TypeError):
+                        v_soc = float("inf")
+                    if v_soc < lowest_soc:
+                        lowest_soc = v_soc
+                        best_vehicle = v
+                if best_vehicle:
+                    current_soc = lowest_soc if lowest_soc != float("inf") else 0.0
+                    target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
+                    battery_capacity = float(best_vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
+                    _LOGGER.debug("[ChargePlanner] Multi-vehicle: no cable, planning for %s soc=%.0f%%",
+                        best_vehicle.get(VEHICLE_NAME, "?"), current_soc)
+                else:
+                    current_soc = self.ocpp.state.soc_percent or 0.0
+                    target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
+                    battery_capacity = self.battery_capacity_kwh
         else:
             current_soc = self.ocpp.state.soc_percent
             if current_soc is None:
                 current_soc = 0.0
             target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
             battery_capacity = self.battery_capacity_kwh
-        soc_needed = max(0.0, target_soc - current_soc)
-        # Fix 7: subtract already-charged energy in this cable session.
-        # Only include active-transaction energy if a transaction is actually running,
-        # otherwise state.energy_kwh may be a stale value from the previous session.
+        # Fix 7: total energy charged this cable session (completed txs + active tx)
         active_tx_energy = self.ocpp.state.energy_kwh if self.ocpp.state.transaction_id is not None else 0.0
         already_charged_kwh = self._session_total_kwh + active_tx_energy
-        energy_needed = max(0.0, (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY - already_charged_kwh)
+        # Bug 8: when SOC entity doesn't update during charging (e.g. Kia Connect),
+        # estimate current SOC from session start SOC + charged energy to avoid
+        # underestimating remaining energy needed.
+        if self._session_start_soc is not None and already_charged_kwh > 0:
+            estimated_soc = self._session_start_soc + (
+                already_charged_kwh * DEFAULT_CHARGE_EFFICIENCY / battery_capacity * 100.0
+            )
+            current_soc = min(estimated_soc, target_soc)
+            _LOGGER.debug(
+                "[ChargePlanner] Estimerad SOC: start=%.1f%% +%.2f kWh → %.1f%%",
+                self._session_start_soc, already_charged_kwh, current_soc,
+            )
+        soc_needed = max(0.0, target_soc - current_soc)
+        # NOTE: already_charged_kwh NOT subtracted here – it's factored into estimated current_soc
+        energy_needed = max(0.0, (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY)
 
         # Power in kW: use schedule current, capped by vehicle's max current if set
         voltage = DEFAULT_VOLTAGE

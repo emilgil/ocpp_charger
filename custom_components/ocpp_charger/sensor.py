@@ -69,6 +69,7 @@ async def async_setup_entry(
         PlannedChargeEndSensor(coordinator, entry),
         PlannedChargeStartSensor(coordinator, entry),
         EstimatedChargeCostSensor(coordinator, entry),
+        PlannedChargeEnergySensor(coordinator, entry),
         SessionCostSensor(coordinator, entry),
         ChargeGoalAchievableSensor(coordinator, entry),
         ChargeCapacitySensor(coordinator, entry),
@@ -429,6 +430,23 @@ class EstimatedChargeCostSensor(OCPPSensorBase):
         plan = self._coord.charge_plan
         if plan and plan.feasible and plan.estimated_cost_sek is not None:
             return round(plan.estimated_cost_sek, 2)
+        return None
+
+
+class PlannedChargeEnergySensor(OCPPSensorBase):
+    """Planned charge energy in kWh (from charge planner)."""
+
+    def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "planned_charge_energy", "Planned Charge Energy")
+        self._attr_native_unit_of_measurement = "kWh"
+        self._attr_icon = "mdi:lightning-bolt"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        plan = self._coord.charge_plan
+        if plan and plan.feasible and plan.energy_kwh:
+            return round(plan.energy_kwh, 2)
         return None
 
 

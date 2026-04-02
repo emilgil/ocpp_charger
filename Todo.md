@@ -1,45 +1,24 @@
-# Todo – OCPP Charger bugfixar (2026-03-18)
-
-## Övergripande sessionmodell (grund för Bug 2, 4, 5, 6)
-
-En **kabelsession** sträcker sig från att kabeln kopplas in (`Preparing`) till att den
-kopplas ur (`Available`). Inom en kabelsession kan det finnas flera OCPP-transaktioner
-(ett per planfönster). Integrationen ska hantera detta korrekt:
-
-```
-Kabel in (Preparing)       → nollställ session_energy/cost, reset notis-flaggor
-  OCPP tx 1 start          → skicka "Startad"-notis (en gång per kabelsession)
-  OCPP tx 1 stopp          → ackumulera energi, ingen notis
-  OCPP tx 2 start          → ingen ny "Startad"-notis
-  OCPP tx 2 stopp          → ackumulera energi, ingen notis
-  SuspendedEV / mål nått   → RemoteStop, force_update, 60s senare "Stoppad"-notis
-Kabel ur (Available)       → session avslutas (notis om ej redan skickad)
-```
-
----
+# Todo – OCPP Charger bugfixar (2026-03-14)
 
 ## Bug 1 – Målnivå stoppar inte laddningen i plan-läge
-
 **Symptom:** Bilen laddade till 88% trots att målnivån var satt till 80%.
 
-**Rotorsak:** `_update_smart_charging()` kontrollerar bara om `now` är inom planfönstret.
-SOC- och kWh-målet ignoreras helt.
+**Rotorsak:** `_update_smart_charging()` i plan-läget (`CHARGE_MODE_SMART` med feasible plan) kontrollerar bara om `now` är inom `plan.start–plan.end`. SOC- och kWh-målet ignoreras helt.
 
 ### Ändringar
 
 **`__init__.py` – `_update_smart_charging()`**
 
-Lägg till mål-check direkt i början av plan-blocket, innan fönsterkontrollen:
+Lägg till mål-check direkt efter att plan-läget konstaterats aktivt, innan fönsterkontrollen:
 
 ```python
-if self.charge_mode == CHARGE_MODE_SMART and plan and plan.feasible:
+if self.charge_mode == CHARGE_MODE_SMART and plan and plan.feasible and plan.start and plan.end:
 
+    # Mål nått → stoppa omedelbart, oavsett planfönster
     soc = state.soc_percent
     soc_reached = soc is not None and self.target_soc > 0 and soc >= self.target_soc
     kwh_reached = self.target_kwh > 0 and state.energy_kwh >= self.target_kwh
-    plan_energy_reached = (
-        plan.energy_kwh > 0 and state.energy_kwh >= plan.energy_kwh
-    )
+    plan_energy_reached = plan.energy_kwh > 0 and state.energy_kwh >= plan.energy_kwh  # fallback om SOC drar ut
 
     if soc_reached or kwh_reached or plan_energy_reached:
         if state.charging:
@@ -48,7 +27,7 @@ if self.charge_mode == CHARGE_MODE_SMART and plan and plan.feasible:
             elif kwh_reached:
                 reason = f"Energi {state.energy_kwh:.2f} kWh >= mål {self.target_kwh:.2f} kWh"
             else:
-                reason = f"Energi {state.energy_kwh:.2f} kWh >= planens {plan.energy_kwh:.2f} kWh"
+                reason = f"Energi {state.energy_kwh:.2f} kWh >= planens {plan.energy_kwh:.2f} kWh (SOC ej tillgänglig)"
             _LOGGER.info("[SmartCharge] Mål nått (%s), stoppar", reason)
             self.hass.async_create_task(self.ocpp.remote_stop_transaction())
         return
@@ -59,52 +38,54 @@ if self.charge_mode == CHARGE_MODE_SMART and plan and plan.feasible:
 
 **`__init__.py` – `_update_charge_plan()`**
 
-Skippa planering om målet redan är nått:
+Skippa planering om målet redan är nått (förhindrar även onödiga dag/natt-notiser):
 
 ```python
 soc = self.ocpp.state.soc_percent
-if (soc is not None and self.target_soc > 0 and soc >= self.target_soc) or \
-   (self.target_kwh > 0 and self.ocpp.state.energy_kwh >= self.target_kwh):
+soc_reached = soc is not None and self.target_soc > 0 and soc >= self.target_soc
+kwh_reached = self.target_kwh > 0 and self.ocpp.state.energy_kwh >= self.target_kwh
+
+if soc_reached or kwh_reached:
     _LOGGER.debug("[ChargePlanner] Mål redan nått, hoppar över planering")
     return
 ```
 
 ---
 
-## Bug 2 – "Startad"-notis skickas vid varje OCPP-transaktion
+## Bug 2 – Notis-storm och felaktig sluttid
 
-**Symptom:** En ny "Startad"-notis per planfönster (tx 1, tx 2 osv) trots att det är
-samma kabelsession. Sluttiden baseras på ETA-beräkning istället för planens sluttid.
-
-**Rotorsak:** Notis-flaggan är kopplad till OCPP session_id, inte kabelsessionen.
-Löses som en del av Bug 6 (kabelsession-modellen). Se den buggen för flaggorna.
+**Symptom:** Flera "Laddning startad"-notiser per session. Sluttiden i notisen baseras på ETA-beräkning istället för laddplanens sluttid.
 
 ### Ändringar
 
-**`__init__.py` – `_check_notify_events()`**
-
-Ersätt befintlig start-notis-logik med check mot `_cable_session_start_notified`:
+**`__init__.py` – ny bool-flagga i `__init__()`**
 
 ```python
-if (
-    not self._cable_session_start_notified
-    and is_charging
-    and state.power_w > 100
-):
-    self._cable_session_start_notified = True
-    plan = self.charge_plan
-    self.notifier.on_charging_started(
-        soc_pct=state.soc_percent,
-        current_a=state.current_a,
-        power_kw=state.power_w / 1000,
-        plan_end=plan.end if plan and plan.feasible else None,
-        estimated_end=self.estimated_completion,
-    )
+self._start_notified_this_connection: bool = False
+```
+
+**`__init__.py` – `_check_notify_events()`**
+
+- Nollställ `_start_notified_this_connection = False` när `status == "Available"` och vid ny `"Preparing"`.
+- Ersätt villkoret `self._notified_start_session != state.session_id` med `not self._start_notified_this_connection`.
+- Sätt `self._start_notified_this_connection = True` när start-notisen skickas.
+
+Skicka med `plan_end` vid anropet till `on_charging_started`:
+
+```python
+plan = self.charge_plan
+self.notifier.on_charging_started(
+    soc_pct=state.soc_percent,
+    current_a=state.current_a,
+    power_kw=power_kw,
+    plan_end=plan.end if plan and plan.feasible else None,
+    estimated_end=self.estimated_completion,
+)
 ```
 
 **`notifier.py` – `on_charging_started()`**
 
-Lägg till `plan_end`-parameter, prioritera den över `estimated_end`:
+Lägg till `plan_end`-parameter och prioritera den över `estimated_end`:
 
 ```python
 def on_charging_started(
@@ -112,8 +93,8 @@ def on_charging_started(
     soc_pct: float | None,
     current_a: float,
     power_kw: float,
-    plan_end: datetime | None,
-    estimated_end: datetime | None,
+    plan_end: datetime | None,       # från charge_plan.end om feasible
+    estimated_end: datetime | None,  # ETA-fallback
 ) -> None:
     ...
     end_time = plan_end or estimated_end
@@ -125,8 +106,7 @@ def on_charging_started(
 
 ## Bug 3 – Dag/natt-notis skickas trots att målnivån är nådd, och kan inte avbrytas
 
-**Symptom:** Upprepade notiser om att dagladdning är billigare trots att bilen redan
-laddats klart, eller när användaren inte vill svara.
+**Symptom:** Upprepade notiser om att dagladdning är billigare, trots att bilen redan laddats klart eller att användaren inte vill svara.
 
 ### Ändringar
 
@@ -144,6 +124,8 @@ self._day_charging_dismissed: bool = False
 
 **`__init__.py` – `_handle_notification_action()`**
 
+Hantera den nya actionen:
+
 ```python
 elif action == NOTIFY_ACTION_DISMISS:
     _LOGGER.info("[Notify] User dismissed day/night choice")
@@ -155,6 +137,8 @@ elif action == NOTIFY_ACTION_DISMISS:
 
 **`__init__.py` – `_update_charge_plan()`**
 
+Skydda `on_day_charging_chosen`-anropet:
+
 ```python
 if notify and not self._day_charging_dismissed:
     self.notifier.on_day_charging_chosen(...)
@@ -162,14 +146,15 @@ if notify and not self._day_charging_dismissed:
 
 **`__init__.py` – `_check_notify_events()`**
 
-Återställ vid kabelurkoppling:
+Återställ flaggan när kabeln kopplas ur (`status == "Available"`):
 
 ```python
-if state.status == "Available":
-    self._day_charging_dismissed = False
+self._day_charging_dismissed = False
 ```
 
 **`notifier.py` – `on_day_charging_chosen()`**
+
+Lägg till "Avsluta"-knapp i actions-listan:
 
 ```python
 {"action": NOTIFY_ACTION_DISMISS, "title": "🚫 Avsluta"}
@@ -179,430 +164,293 @@ if state.status == "Available":
 
 ## Bug 4 – Gammal SOC i stopp-notisen
 
-**Symptom:** Stopp-notisen visar gammal SOC eftersom bilen inte hunnit synka med
-Kia UVO-molnet.
+**Symptom:** När laddningen avslutas visas gammal SOC i notisen eftersom bilen inte hunnit rapportera uppdaterat värde.
 
-**Rotorsak:** Notisen skickas direkt när laddningen avslutas. Bilen behöver ca 60
-sekunder för att synka tillståndet via molnet.
+**Rotorsak:** `on_charging_stopped` anropas direkt när `charging` flippar False. HA-entiteten för SOC kan ha fördröjning och hinner inte uppdateras innan notisen skickas.
 
 ### Ändringar
 
-**`__init__.py` – stopp-notis-hjälpfunktion**
+**`__init__.py` – `_check_notify_events()`**
 
-Skapa en intern hjälpfunktion `_send_stop_notification()` som används av både
-SuspendedEV-fallet (Bug 5) och kabelurkoppling (Bug 6). Den ska alltid:
-
-1. Trigga biluppdatering omedelbart via `kia_uvo.force_update`.
-2. Vänta 60 sekunder via `async_call_later` innan notisen skickas.
-3. Hämta uppdaterad SOC via `_update_soc_from_ha()` precis innan notisen skickas.
-4. Använda `_cable_session_energy_kwh` och `_cable_session_cost_sek` som värden.
+Fördröj stopp-notisen med `async_call_later` (t.ex. 15 sekunder) för att ge SOC-entiteten tid att uppdateras:
 
 ```python
-def _send_stop_notification(self) -> None:
-    if self._cable_session_stop_notified:
-        return
-    self._cable_session_stop_notified = True
+if (
+    self._notify_on_stop
+    and not is_charging
+    and self._was_charging
+    and self._notified_stop_session != state.session_id
+    and self._notified_start_session == state.session_id
+    ...
+):
+    self._notified_stop_session = state.session_id
+    elapsed = self.elapsed_seconds or 0
 
-    self.hass.async_create_task(
-        self.hass.services.async_call("kia_uvo", "force_update", {})
-    )
-
-    energy_kwh = self._cable_session_energy_kwh
-    cost_sek = self._cable_session_cost_sek
-
-    async def _delayed(_now=None):
-        self._update_soc_from_ha()
+    async def _send_stop_notif(_now=None):
+        self._update_soc_from_ha()  # uppdatera SOC en gång till
         self.notifier.on_charging_stopped(
             soc_pct=self.ocpp.state.soc_percent,
-            energy_kwh=energy_kwh,
-            actual_cost_sek=cost_sek,
-            duration_minutes=self._cable_session_elapsed_minutes(),
+            energy_kwh=state.energy_kwh,
+            actual_cost_sek=state.accumulated_cost,
+            duration_minutes=elapsed // 60,
         )
 
-    async_call_later(self.hass, 60, _delayed)
+    async_call_later(self.hass, 15, _send_stop_notif)
 ```
 
 ---
 
-## Bug 5 – SuspendedEV avslutar inte laddningen
+## Bug 5 – Laddplan uppdateras inte direkt när target_soc/target_kwh/fordon ändras
 
-**Symptom:** När bilen når sin interna AC-laddningsgräns (t.ex. 90%) övergår
-laddboxen till `SuspendedEV` med power=0W. Integrationen håller transaktionen öppen
-och försöker sedan starta en ny (som rejected), vilket kapar sessionen och ger
-felaktig energimätning.
+**Symptom:** Efter att användaren ändrar målnivå (SOC eller kWh) eller byter aktivt fordon dröjer det upp till 5 minuter innan laddplanen räknas om, på grund av throttle i `_update_charge_plan()`.
 
-**Rotorsak:** Två brister:
-1. `SuspendedEV` hanteras inte som avslutskriterium.
-2. Auto-start-checken ser `charging=False` och skickar `RemoteStartTransaction` trots
-   att en transaktion redan är aktiv.
+**Rotorsak:** `_last_plan_update` nollställs inte vid dessa ändringar, så throttlen (`< 300s sedan senaste omräkning`) blockerar omräkning tills nästa 5-minutersfönster öppnar.
 
 ### Ändringar
 
-**`__init__.py` – `__init__()`**
+**`__init__.py` – `set_target_soc()`**
 
 ```python
-self._suspended_ev_since: datetime | None = None
+def set_target_soc(self, soc: float) -> None:
+    self.target_soc = soc
+    self._last_plan_update = None  # tvinga omräkning nästa cykel
+    self.async_set_updated_data(self.ocpp.state)
 ```
 
-**`__init__.py` – `_update_smart_charging()`**
-
-Lägg till SuspendedEV-guard i början av funktionen, efter mål-checken (Bug 1):
+**`__init__.py` – `set_target_kwh()`**
 
 ```python
-if state.status == "SuspendedEV" and state.power_w < 100:
-    if self._suspended_ev_since is None:
-        self._suspended_ev_since = now
-    elif (now - self._suspended_ev_since).total_seconds() >= 60:
-        if state.charging:
-            _LOGGER.info("[SmartCharge] SuspendedEV i >60s – bilen nöjd, avslutar")
-            self.hass.async_create_task(self.ocpp.remote_stop_transaction())
-            self._send_stop_notification()
-        return
-else:
-    self._suspended_ev_since = None
+def set_target_kwh(self, kwh: float) -> None:
+    self.target_kwh = kwh
+    self._last_plan_update = None  # tvinga omräkning nästa cykel
+    self.async_set_updated_data(self.ocpp.state)
 ```
 
-**`__init__.py` – auto-start-check**
+**`__init__.py` – `set_active_vehicle()`**
 
-Lägg till guard mot aktiv transaktion:
+Lägg till nollställning av throttle efter befintlig logik:
 
 ```python
-if self.ocpp.state.transaction_id is not None:
-    _LOGGER.debug(
-        "[SmartCharge] Transaktion redan aktiv (%s), hoppar över auto-start",
-        self.ocpp.state.transaction_id,
-    )
-    return
+self._last_plan_update = None  # tvinga omräkning nästa cykel
 ```
 
 ---
 
-## Bug 6 – session_energy/cost nollställs vid varje OCPP-transaktionsstopp
+## Bug 6 – Multi-vehicle-logiken väljer fel fordon när kabeln är inkopplad
 
-**Symptom:** Energi och kostnad nollställs vid varje planmässigt stopp. Energi
-levererad i transaktion 2 och 3 registrerades aldrig. Stopp-notis skickades
-felaktigt efter varje OCPP-transaktion.
+**Symptom:** När bil kopplas in räknas laddplanen om baserat på fordonet med lägst SOC (t.ex. Kia eNiro soc=28% → target 60%) istället för det aktiva fordonet som faktiskt laddas. Resulterar i felaktig plan och completion time.
 
-**Rotorsak:** Integrationen likställer "session" med OCPP-transaktion. Korrekt
-definition: session = kabel in → kabel ur.
+**Bevis från logg (2026-04-01 21:23:06):**
+```
+[ChargePlanner] Multi-vehicle: planning for Kia eNiro soc=28%
+Planning: soc=28%→60% energy=2.48 kWh → plan: 04:00–04:15 (15 min)
+```
+Den inkopplade bilen var inte Kia eNiro, men multi-vehicle-logiken valde den ändå eftersom den hade lägst SOC.
+
+**Rotorsak:** `_update_charge_plan()` använder alltid "lägst SOC bland alla fordon" vid multi-vehicle, oavsett om `cable_connected == True`. När kabeln är inkopplad borde det aktiva fordonet (`active_vehicle`) användas istället.
 
 ### Ändringar
-
-**`__init__.py` – `__init__()`**
-
-```python
-self._cable_session_energy_kwh: float = 0.0
-self._cable_session_cost_sek: float = 0.0
-self._cable_session_start_notified: bool = False
-self._cable_session_stop_notified: bool = False
-self._cable_session_start_time: datetime | None = None
-```
-
-**`__init__.py` – `_check_notify_events()` / statusövergång**
-
-Nollställ vid övergång `Available → Preparing`:
-
-```python
-if prev_status == "Available" and state.status == "Preparing":
-    self._cable_session_energy_kwh = 0.0
-    self._cable_session_cost_sek = 0.0
-    self._cable_session_start_notified = False
-    self._cable_session_stop_notified = False
-    self._cable_session_start_time = now
-    _LOGGER.debug("[Session] Ny kabelsession – nollställer ackumulatorer")
-```
-
-Skicka stopp-notis vid kabelurkoppling om inte redan skickad:
-
-```python
-if state.status == "Available" and self._cable_session_energy_kwh > 0:
-    self._send_stop_notification()
-```
-
-**`ocpp_client.py` – `handle_stop_transaction()`**
-
-Ackumulera energi från laddboxens mätarvärden (tillförlitligaste källan) i stället
-för att nollställa:
-
-```python
-tx_energy_kwh = (meter_stop - meter_start) / 1000.0
-tx_cost_sek = <beräkna från pris och energi som idag>
-
-coordinator._cable_session_energy_kwh += tx_energy_kwh
-coordinator._cable_session_cost_sek += tx_cost_sek
-
-_LOGGER.info(
-    "[Session] OCPP tx avslutad: +%.2f kWh (totalt %.2f kWh denna kabelsession)",
-    tx_energy_kwh,
-    coordinator._cable_session_energy_kwh,
-)
-# Ta INTE bort/nollställ session_energy här längre
-```
-
-**`__init__.py` – `_cable_session_elapsed_minutes()`**
-
-Lägg till hjälpmetod:
-
-```python
-def _cable_session_elapsed_minutes(self) -> int:
-    if self._cable_session_start_time is None:
-        return 0
-    return int((dt_util.utcnow() - self._cable_session_start_time).total_seconds() / 60)
-```
-
----
-
-## Fältmappning – energi/kostnad (underlag från CC-genomgång 2026-03-18)
-
-Baserat på genomgång av alla energi/kostnads-fält definieras här exakt vad som
-ska förändras och vad som ska vara oförändrat.
-
-### Fält som BEHÅLLS oförändrade
-
-| Fält | Var | Motivering |
-|------|-----|------------|
-| `total_energy_kwh` | `ChargerState` | Laddboxens totala mätarställning – berörs inte |
-| `total_cost` | `ChargerState` | Kumulativ kostnad alla sessioner – berörs inte |
-| `session_energy_start` | `ChargerState` | Behövs för OCPP-transaktionsberäkning i `ocpp_client.py` |
-| `plan.energy_kwh`, `plan.estimated_cost_sek` | `ChargePlan` | Planeringsdata – berörs inte |
-
-### Fält som ÄNDRAR SEMANTIK
-
-**`energy_kwh` i `ChargerState`**
-
-Idag: nollställs vid `StartTransaction`, representerar innevarande OCPP-transaktion.
-Efter: fortsätter representera innevarande OCPP-transaktion (oförändrat internt), men
-används INTE längre direkt i notiser eller sensorer som "sessionsenergi". Sensorer och
-notiser ska i stället läsa `coordinator._cable_session_energy_kwh`.
-
-Berörs:
-- `sensor.py` `SessionEnergySensor` → ändra till `coordinator._cable_session_energy_kwh`
-- `__init__.py` `_handle_charging_stopped` → ändra till `_cable_session_energy_kwh`
-- `__init__.py` `_fire_session_event()` → ändra till `_cable_session_energy_kwh`
-- `__init__.py` notiser rad 844, 902 → ändra till `_cable_session_energy_kwh`
-- `_update_cost()`, `_estimate_completion()`, `_update_smart_charging()`, `_check_target_reached()` → **behåll** `state.energy_kwh` (dessa jobbar mot pågående OCPP-transaktion, korrekt)
-
-**`accumulated_cost` i `ChargerState`**
-
-Idag: nollställs vid `StartTransaction`, representerar innevarande OCPP-transaktion.
-Efter: fortsätter nollställas per OCPP-transaktion (används i `_update_cost()` för
-löpande kostnadsberäkning), men används INTE längre i notiser eller sensorer.
-
-Berörs:
-- `sensor.py` `SessionCostSensor` → ändra till `coordinator._cable_session_cost_sek`
-- `__init__.py` `_handle_charging_stopped` → ändra till `_cable_session_cost_sek`
-- `__init__.py` `_fire_session_event()` → ändra till `_cable_session_cost_sek`
-- `__init__.py` `_handle_cable_connected` (rad 1154) → **ta bort** nollställning härifrån, nollställs nu i kabelsessions-reset-blocket (`Available → Preparing`)
-- `__init__.py` `_last_cost_energy_kwh` (rad 1155, 1181) → nollställ även dessa i kabelsessions-reset
-
-### Fält som LÄGGS TILL
-
-I `OCPPCoordinator.__init__()`:
-
-```python
-self._cable_session_energy_kwh: float = 0.0
-self._cable_session_cost_sek: float = 0.0
-self._cable_session_start_notified: bool = False
-self._cable_session_stop_notified: bool = False
-self._cable_session_start_time: datetime | None = None
-self._suspended_ev_since: datetime | None = None
-```
-
-### Persistens
-
-Lägg till i `_save_state()` / `_load_state()`:
-```python
-"cable_session_energy_kwh": self._cable_session_energy_kwh,
-"cable_session_cost_sek": self._cable_session_cost_sek,
-```
-Så att energi/kostnad överlever en HA-omstart mitt i en kabelsession (t.ex. om HA
-startas om under natten mellan planfönster 1 och 2).
-
----
-
-## ✅ Fix 7 – Planeraren räknar om från noll efter varje delstopp (2026-03-20)
-
-**Symptom:** Nattladdningen skapar 5–6 separata laddningssessioner istället för en
-sammanhängande. Planeraren räknar om planen efter varje 30-min delstopp eftersom
-`state.energy_kwh` nollställs vid varje ny OCPP-transaktion och SOC-entiteten inte
-uppdateras under natten.
-
-**Rotorsak:** `_update_charge_plan()` beräknar `energy_needed` utan att ta hänsyn
-till redan laddad energi från tidigare deltransaktioner i samma kabelsession.
-
-### Ändringar
-
-**`__init__.py` – `__init__()`**
-
-Nytt fält efter `_last_remote_start`:
-
-```python
-self._session_total_kwh: float = 0.0   # ackumulerad energi sedan kabeln kopplades in
-```
-
-**`__init__.py` – `_check_notify_events()` / Available-blocket**
-
-Nollställ vid kabelurkoppling:
-
-```python
-if status == "Available":
-    self._was_charging = False
-    self._session_total_kwh = 0.0
-```
-
-**`__init__.py` – `_check_notify_events()` / Preparing-blocket**
-
-Direkt EFTER befintliga nollställningar av `accumulated_cost` och `_last_cost_energy_kwh`:
-
-```python
-self._session_total_kwh += self.ocpp.state.energy_kwh  # spara föregående delsessions energi
-```
 
 **`__init__.py` – `_update_charge_plan()`**
 
-Ersätt beräkning av `energy_needed`:
+Ändra multi-vehicle-grenen så att `active_vehicle` prioriteras när kabeln är inkopplad:
 
 ```python
-# Innan:
-energy_needed = (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY
-
-# Efter:
-already_charged_kwh = self._session_total_kwh + self.ocpp.state.energy_kwh
-energy_needed = max(0.0, (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY - already_charged_kwh)
+if len(self._vehicles) > 1:
+    if self.ocpp.state.cable_connected and self.active_vehicle:
+        # Kabeln är inkopplad – använd det aktiva fordonet
+        current_soc = self.ocpp.state.soc_percent or 0.0
+        target_soc = float(self.active_vehicle.get("target_soc", 80.0))
+        battery_capacity = float(self.active_vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
+        _LOGGER.debug("[ChargePlanner] Multi-vehicle: cable connected, planning for active vehicle %s soc=%.0f%%",
+            self.active_vehicle.get(VEHICLE_NAME, "?"), current_soc)
+    else:
+        # Ingen bil inkopplad – välj fordon med lägst SOC för att visa kommande behov
+        best_vehicle = None
+        lowest_soc = float("inf")
+        for v in self._vehicles:
+            soc_ent = v.get(VEHICLE_SOC_ENTITY, "")
+            soc_st = self.hass.states.get(soc_ent) if soc_ent else None
+            try:
+                v_soc = float(soc_st.state) if soc_st else float("inf")
+            except (ValueError, TypeError):
+                v_soc = float("inf")
+            if v_soc < lowest_soc:
+                lowest_soc = v_soc
+                best_vehicle = v
+        if best_vehicle:
+            current_soc = lowest_soc if lowest_soc != float("inf") else 0.0
+            target_soc = float(best_vehicle.get("target_soc", 80.0))
+            battery_capacity = float(best_vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
+            _LOGGER.debug("[ChargePlanner] Multi-vehicle: no cable, planning for %s soc=%.0f%%",
+                best_vehicle.get(VEHICLE_NAME, "?"), current_soc)
+        else:
+            current_soc = self.ocpp.state.soc_percent or 0.0
+            target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
+            battery_capacity = self.battery_capacity_kwh
 ```
 
 ---
 
-## ✅ Fix 8 – Dubbel RemoteStop inom sekunder (2026-03-20)
+## Bug 7 – Laddplan underskattar energi pga fel strömbegränsning i fallback (EJ BEKRÄFTAD)
 
-**Symptom:** Två update-cykler triggar ibland `remote_stop_transaction()` inom 1–2
-sekunder av varandra. Ger dubblerade stopp-meddelanden i loggen.
+**Symptom:** Laddplan beräknas till onormalt kort tid (15 min för ~20 kWh behov). Sett 2026-04-01 21:23 vid kabelinkoppling kl 21:22.
 
-**Rotorsak:** Ingen debounce på RemoteStop. Två `_async_update_data()`-cykler kan
-båda nå stop-villkoret innan den första har hunnit ändra `state.charging`.
-
-### Ändringar
-
-**`__init__.py` – `__init__()`**
+**Hypotes:** `power_kw`-fallbackvärdet i `_update_charge_plan()` beräknas med **aktuell** strömbegränsning via `schedule.current_limit()` (utan argument = just nu). Kl 21:23 är det dagtid (06:00–22:00) → 6A → 4.1 kW. Det planerade intervallet (04:00) är nattetid → borde vara 16A → 11 kW. Om `plan_cheapest_window` faller tillbaka på detta felaktiga värde för något intervall underskattas energin grovt.
 
 ```python
-self._last_remote_stop: datetime | None = None
+# Misstänkt rad i _update_charge_plan():
+power_kw = (self.schedule.current_limit() * voltage * self.num_phases) / 1000.0
+# Borde kanske vara schedule.current_limit_at(planned_interval_time)
+# men det hanteras redan via schedule_fn – måste verifieras i logg
 ```
 
-**`__init__.py` – `_update_smart_charging()`**
-
-På ALLA ställen där `remote_stop_transaction()` anropas (plan-window-blocket och
-fallback-blocket), ersätt:
-
-```python
-self.hass.async_create_task(self.ocpp.remote_stop_transaction())
-```
-
-med:
-
-```python
-_now = datetime.now(timezone.utc)
-if self._last_remote_stop and (_now - self._last_remote_stop).total_seconds() < 15:
-    _LOGGER.debug("[SmartCharge] Dubbel-stop guardad (%.1fs sedan senaste)",
-                  (_now - self._last_remote_stop).total_seconds())
-else:
-    self._last_remote_stop = _now
-    self.hass.async_create_task(self.ocpp.remote_stop_transaction())
-```
-
----
-
-## ✅ Fix 9 – Upprepad "Inkopplad"-notis under natt-cykeln (2026-03-20)
-
-**Symptom:** "Inkopplad"-notisen skickas vid varje OCPP-delsession (Preparing) under
-natten, inte bara en gång per kabelinkoppling.
-
-**Rotorsak:** `_notified_connect_session` jämförs mot `state.session_id`, som ändras
-vid varje ny OCPP-transaktion. Lösningen är en enkel bool-flagga per kabelsession.
-
-### Ändringar
-
-**`__init__.py` – `__init__()`**
-
-```python
-self._cable_session_notified_connect: bool = False
-```
-
-**`__init__.py` – `_check_notify_events()` / Available-blocket**
-
-```python
-if status == "Available":
-    self._was_charging = False
-    self._session_total_kwh = 0.0
-    self._cable_session_notified_connect = False
-```
-
-**`__init__.py` – `_check_notify_events()` / Preparing-villkoret**
-
-Ersätt:
-```python
-and self._notified_connect_session != state.session_id
-```
-med:
-```python
-and not self._cable_session_notified_connect
-```
-
-I samma block, lägg till efter `self._notified_connect_session = state.session_id`:
-```python
-self._cable_session_notified_connect = True
-```
-
----
-
-## ✅ Fix 10 – Periodisk SOC-omläsning de första 30 minuterna efter inkoppling (2026-03-20)
-
-**Symptom:** Bilappen uppdaterar SOC med fördröjning efter körning. Planeraren
-beräknar `energy_needed` från gammal SOC som råkade vara i HA vid inkoppling.
-
-**Rotorsak:** SOC-entiteten läses bara en gång vid Preparing. Om bilappen uppdaterar
-SOC 5–10 minuter senare hinner inte planen justeras.
-
-### Ändringar
-
-**`__init__.py` – `__init__()`**
-
-```python
-self._cable_connect_time: datetime | None = None
-self._soc_at_connect: float | None = None
-self._soc_reread_done: bool = False
-```
-
-**`__init__.py` – `_check_notify_events()` / Preparing-blocket**
-
-Sätter `_cable_connect_time`, `_soc_at_connect`, `_soc_reread_done = False`.
-
-**`__init__.py` – `_check_notify_events()` / Available-blocket**
-
-Nollställer `_cable_connect_time = None`, `_soc_reread_done = True`.
-
-**`__init__.py` – `_check_soc_reread()` (ny metod)**
-
-- Körs varje update-cykel (10s) under 30 min efter Preparing
-- Avbryter vid `charging == True`
-- Läser SOC-entiteten direkt, konverterar kWh→% om nödvändigt
-- Om ΔSoC ≥ 5 pp → uppdaterar `soc_percent`, nollställer `_last_plan_update`, anropar `_update_charge_plan()`
-
-**`__init__.py` – `_async_update_data()`**
-
-Anrop `self._check_soc_reread()` direkt efter `self._update_soc_from_ha()`.
-
----
-
-## Verifiering efter deploy (Fix 7–10)
+**⚠️ KRÄVER VERIFIERING** – kör detta nästa gång planen beter sig konstigt:
 
 ```bash
-grep -E "session_total|Dubbel-stop|cable_session|Fördröjd SOC|Omläsning|Plan window active|Outside plan|RemoteStart|RemoteStop" /config/ocpp_charger_debug.log | tail -50
+grep -E "ChargePlanner.*Planning|ChargePlanner.*Charge|Schedule.*Period|Schedule.*limit" /config/ocpp_charger_debug.log | grep -A5 "$(date +'%H:%M')"
 ```
 
-Förväntat resultat i natt: en enda "Inkopplad"-notis, planeraren räknar ned
-`energy_needed` successivt, och laddningen slutar när målet är nått istället för
-att starta om.
+Eller vid kabelinkoppling:
+```bash
+grep -E "(ChargePlanner|Schedule)" /config/ocpp_charger_debug.log | tail -20
+```
+
+**Rotorsak (om bekräftad):** `power_kw` används som fallback i `plan_cheapest_window` när `schedule_fn` inte ger ett värde. Fixa genom att beräkna fallback-power baserat på nattströmsgränsen, eller säkerställ att `schedule_fn` alltid används per intervall.
+
+---
+
+## Observation – Laddning i flera block trots Contiguous (2026-04-01→02, Kia eNiro)
+
+**Vad hände:** Laddningen delades upp i minst tre separata OCPP-sessioner under natten, trots att Contiguous var valt. Varje session var i sig ett sammanhängande block — Contiguous-algoritmen fungerade korrekt per session. Problemet är att **varje ny session planeras om från scratch** baserat på återstående energibehov, vilket ger ett nytt (kortare) Contiguous-block istället för att hela nattens behov täcks i ett enda block från början.
+
+**Observerade värden:**
+- Session 1: `23:30–00:30`, 8.26 kWh laddades
+- Plan efter session 1: `soc=28%→70% energy=9.44 kWh → 03:15–04:15`
+- SOC fastnade på 28% hela natten (Kia Connect uppdaterar inte SOC under laddning)
+- target_soc bytte från 60% → 70% mellan session 1 och 2 — oklart varför
+
+**Öppna frågor som kräver debug-logg från nästa laddnatt:**
+
+1. ✅ **Varför bytte target_soc från 60% → 70%?** Bekräftat: användaren ändrade manuellt till 70% kl 22:03 — korrekt beteende.
+
+2. **Stämmer `already_charged_kwh`-avdraget?** Med 8.26 kWh laddat och target 70%: förväntat `energy_needed ≈ 20.9 kWh`, men loggat var `9.44 kWh`. Antingen är avdraget fel eller target/kapacitet är fel. Debug-raden visar detta.
+
+3. **Nåddes målet?** Bilen laddade till kl 06:00 (deadline) — oklart om målet nåddes eller om laddningen avbröts av deadline.
+
+**Grep för nästa analys:**
+```bash
+grep -E "ChargePlanner.*DEBUG battery|ChargePlanner.*Planning|already_charged|session_total" /config/ocpp_charger_debug.log | grep "$(date +'%Y-%m-%d')"
+```
+
+---
+
+## Bug 8 – Felaktig energiberäkning vid planomräkning när SOC-entitet inte uppdateras
+
+**Symptom:** När laddplanen räknas om mitt i natten (efter ett avslutat block) underskattas återstående energibehov kraftigt. Sett 2026-04-02 00:30: efter 8.26 kWh laddat räknades `energy_needed=9.44 kWh` (förväntat ~20.9 kWh).
+
+**Rotorsak:** Kia Connect (och troligen andra bilintegrationer) uppdaterar inte SOC-entiteten under pågående laddning. `current_soc` läses från HA-entiteten och är alltid startvärdet (28%). Formeln:
+
+```
+energy_needed = (target_soc - current_soc) / 100 × capacity / efficiency - already_charged_kwh
+```
+
+ger fel resultat eftersom `current_soc` inte reflekterar faktisk SOC efter laddning. `already_charged_kwh` dras av men `current_soc` är oförändrat, vilket skapar inkonsekvens.
+
+**Korrekt approach:** Estimera aktuell SOC utifrån startvärde + laddad energi:
+
+```python
+# I _update_charge_plan(), ersätt current_soc-läsning med estimerat värde:
+if self._session_start_soc is not None and already_charged_kwh > 0:
+    estimated_soc = self._session_start_soc + (
+        already_charged_kwh * DEFAULT_CHARGE_EFFICIENCY / battery_capacity * 100.0
+    )
+    current_soc = min(estimated_soc, target_soc)
+    _LOGGER.debug(
+        "[ChargePlanner] Estimerad SOC: start=%.1f%% +%.2f kWh → %.1f%%",
+        self._session_start_soc, already_charged_kwh, current_soc,
+    )
+# Sedan beräkna energy_needed utan already_charged_kwh-avdrag (det ingår redan i estimated_soc):
+soc_needed = max(0.0, target_soc - current_soc)
+energy_needed = (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY
+```
+
+**OBS:** När denna fix görs ska `already_charged_kwh`-avdraget i `energy_needed`-formeln **tas bort** — annars dubbelräknas den laddade energin.
+
+**Verifieras med debug-raden** som lagts till i `_update_charge_plan()` — nästa laddnatt syns `battery_capacity/target_soc/current_soc/energy_needed` i loggen.
+
+---
+
+## Bug 9 – SOC låses till "ocpp"-källa och uppdateras inte från HA-entitet
+
+**Symptom:** `sensor.ev_charger_*_battery_level` visar 28% under hela laddnatten trots att `sensor.e_niro_ev_battery_level` uppdaterades till 62% av Kia Connect.
+
+**Rotorsak:** I `_update_soc_from_ha()` finns tidig return-logik som låser SOC-källan:
+
+```python
+if state.soc_percent is not None and self._soc_source == "ocpp":
+    return  # ← returnerar utan att läsa HA-entiteten
+if state.soc_percent is not None and self._soc_source != "ocpp":
+    self._soc_source = "ocpp"  # ← låser källan till "ocpp"
+    return
+```
+
+När `soc_percent` är satt (t.ex. 28% från OCPP vid sessionstart) och källan inte är `"ocpp"`, sätts källan om till `"ocpp"` och returnerar. Därefter matchar alltid första villkoret och HA-entiteten läses aldrig mer. Rad 564 som borde uppdatera från entitet nås aldrig:
+
+```python
+if entity_soc is not None and self._soc_source in ("entity", "none"):  # ← nås ej
+```
+
+**Fix:** OCPP-prioriteten ska bara gälla när OCPP *aktivt* skickar ett nytt SOC-mätvärde (det sker i OCPP-mätvärdeshanteraren). I `_update_soc_from_ha()` ska HA-entiteten alltid tillåtas uppdatera när den är tillgänglig. Ta bort den tidiga return-logiken och låt entitetsvärdet vinna när det finns:
+
+```python
+def _update_soc_from_ha(self) -> None:
+    state = self.ocpp.state
+
+    # Läs HA-entitet
+    entity_soc: float | None = None
+    if self.soc_entity:
+        ha_state = self.hass.states.get(self.soc_entity)
+        if ha_state and ha_state.state not in ("unavailable", "unknown", ""):
+            try:
+                val = float(ha_state.state)
+                if self.soc_unit == SOC_UNIT_KWH and self.battery_capacity_kwh > 0:
+                    val = (val / self.battery_capacity_kwh) * 100.0
+                if val is not None and 0.0 <= val <= 100.0:
+                    entity_soc = val
+            except ValueError:
+                pass
+
+    # OCPP rapporterar aktivt SOC → högst prioritet, men uppdatera bara om OCPP-källan är färsk
+    # (OCPP sätter _soc_source="ocpp" direkt i MeterValues-hanteraren när nytt värde anländer)
+    if self._soc_source == "ocpp":
+        return  # OCPP-värde nyss satt, behåll det
+
+    # HA-entitet tillgänglig → använd alltid (även under laddning)
+    if entity_soc is not None:
+        if state.soc_percent != entity_soc:
+            _LOGGER.debug("[SOC] Uppdaterar från HA-entitet: %.1f%% → %.1f%%",
+                state.soc_percent or 0.0, entity_soc)
+        state.soc_percent = entity_soc
+        self._soc_source = "entity"
+        # Spara som session-start-SOC om ingen finns
+        if state.charging and self._session_start_soc is None:
+            self._session_start_soc = entity_soc
+        return
+
+    # Fallback: estimera från energimätaren
+    if self._session_start_soc is not None and self.battery_capacity_kwh > 0:
+        added_kwh = state.energy_kwh * DEFAULT_CHARGE_EFFICIENCY
+        estimated = self._session_start_soc + (added_kwh / self.battery_capacity_kwh * 100.0)
+        state.soc_percent = min(100.0, round(estimated, 1))
+        self._soc_source = "estimated"
+
+    # Idle utan kabel: nollställ session-SOC
+    if not state.charging and not state.cable_connected:
+        self._session_start_soc = None
+```
+
+**OBS:** `_soc_source` måste återställas till `"none"` eller `"entity"` i OCPP-mätvärdeshanteraren *efter* att ett OCPP SOC-värde processats, så att nästa cykel inte fastnar i `"ocpp"`-låsningen om OCPP slutar rapportera SOC.
 
 ---
 

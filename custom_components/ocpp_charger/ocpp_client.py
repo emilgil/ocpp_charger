@@ -376,6 +376,13 @@ class OCPPClient:
                         prev = self.state.soc_percent
                         if prev is None or abs(value - prev) <= 20:
                             self.state.soc_percent = value
+                            # Bug 9: mark coordinator so _update_soc_from_ha() keeps this value
+                            if self._hass:
+                                from . import OCPPCoordinator
+                                from .const import DOMAIN
+                                for coord in self._hass.data.get(DOMAIN, {}).values():
+                                    if isinstance(coord, OCPPCoordinator) and coord.ocpp is self:
+                                        coord._soc_source = "ocpp"
                         else:
                             _LOGGER.warning(
                                 "[OCPP] Ignoring implausible SoC from charger: "

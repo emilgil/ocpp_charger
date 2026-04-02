@@ -21,7 +21,7 @@ scp -r custom_components/ocpp_charger/*.py root@192.168.1.97:/config/custom_comp
 ssh root@192.168.1.97 "ha core restart"
 
 # Följ loggen
-ssh root@192.168.1.97 "grep -i ocpp_charger /config/home-assistant.log | grep -v SmartThings | tail -30"
+ssh root@192.168.1.97 "grep -i ocpp_charger /config/home-assistant.log | tail -30"
 
 # Debug-logg (mer verbose, roterande fil)
 ssh root@192.168.1.97 "tail -f /config/ocpp_charger_debug.log"
