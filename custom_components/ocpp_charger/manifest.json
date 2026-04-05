@@ -1,14 +1,15 @@
 {
   "domain": "ocpp_charger",
   "name": "OCPP EV Charger",
-  "version": "1.2.0",
+  "version": "1.0.0",
   "documentation": "https://github.com/emilgil/ocpp_charger",
   "issue_tracker": "https://github.com/emilgil/ocpp_charger/issues",
   "requirements": [
-    "websockets>=11.0"
+    "websockets>=11.0",
+    "ocpp>=0.25.0"
   ],
-  "after_dependencies": ["mqtt"],
-  "codeowners": [],
+  "dependencies": ["mqtt"],
+  "codeowners": ["@emilgil"],
   "iot_class": "local_push",
   "config_flow": true,
   "icon": "mdi:ev-station"
