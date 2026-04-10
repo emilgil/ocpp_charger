@@ -1375,23 +1375,37 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 and (datetime.now(timezone.utc) - self._preparing_timestamp).total_seconds() < 5
             )
         ):
-            self._notified_stop_session = state.session_id
-            elapsed = self.elapsed_seconds or 0
-            # Capture values now (energy/cost), but delay sending so SOC can update
-            _stop_energy = state.energy_kwh
-            _stop_cost = state.accumulated_cost
-            _stop_elapsed = elapsed
-
-            async def _send_stop_notif(_now=None):
-                self._update_soc_from_ha()  # refresh SOC one more time
-                self.notifier.on_charging_stopped(
-                    soc_pct=self.ocpp.state.soc_percent,
-                    energy_kwh=_stop_energy,
-                    actual_cost_sek=_stop_cost,
-                    duration_minutes=_stop_elapsed // 60,
+            # Bug 11: Don't send stop notification if plan has more windows ahead
+            # (e.g., charging paused at a price gap but will resume soon)
+            plan = self.charge_plan
+            now_utc = datetime.now(timezone.utc)
+            if (
+                plan and plan.feasible and plan.end
+                and now_utc < plan.end
+            ):
+                _LOGGER.info(
+                    "[Notify] Laddning pausad men plan aktiv till %s – håller inne stopp-notis",
+                    plan.end.astimezone().strftime("%H:%M"),
                 )
+            else:
+                self._notified_stop_session = state.session_id
+                self._cable_session_stop_notified = True  # Prevent duplicate via _send_stop_notification()
+                elapsed = self.elapsed_seconds or 0
+                # Capture values now (energy/cost), but delay sending so SOC can update
+                _stop_energy = state.energy_kwh
+                _stop_cost = state.accumulated_cost
+                _stop_elapsed = elapsed
 
-            async_call_later(self.hass, 15, _send_stop_notif)
+                async def _send_stop_notif(_now=None):
+                    self._update_soc_from_ha()  # refresh SOC one more time
+                    self.notifier.on_charging_stopped(
+                        soc_pct=self.ocpp.state.soc_percent,
+                        energy_kwh=_stop_energy,
+                        actual_cost_sek=_stop_cost,
+                        duration_minutes=_stop_elapsed // 60,
+                    )
+
+                async_call_later(self.hass, 15, _send_stop_notif)
 
         if self._was_charging and not is_charging:
             self._manual_start_requested = False  # charging ended, clear manual override

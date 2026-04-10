@@ -134,7 +134,31 @@ Fyra events, var och en skickas max 1 gång per session (dedup-guards):
 - `ocpp_charger.get_configuration` – hämtar Garo-konfiguration, svar på event `ocpp_charger_ocpp_response`
 - `ocpp_charger.change_configuration` – ändrar Garo-konfiguration
 
-## Kända öppna punkter (2026-03-10)
-- Auto-start baserat på laddplan: implementerat men ej verifierat i natt än
-- Manuell start med grace period: implementerat men ej verifierat
-- Imorgondagens priser publiceras ca 13:00 → laddplan uppdateras automatiskt inom 5 min
+## Kabelsessions-modell (2026-04-10)
+
+En **kabelsession** sträcker sig från att kabeln kopplas in (`Preparing`) till att den
+kopplas ur (`Available`). Inom en kabelsession kan det finnas flera OCPP-transaktioner
+(ett per planfönster, vid diskontinuerliga planer med prishål).
+
+**Nyckelfält:**
+- `_cable_session_energy_kwh` – ackumulerad energi över alla tx i kabelsessionen
+- `_cable_session_cost_sek` – ackumulerad kostnad
+- `_cable_session_start_notified` – en "Startad"-notis per kabelsession
+- `_cable_session_stop_notified` – en "Stoppad"-notis per kabelsession
+
+**Notis-logik:**
+- `on_cable_connected` – vid Preparing (en gång per kabelsession)
+- `on_charging_started` – vid första charging=True med power>100W (en gång)
+- `on_charging_stopped` – vid kabelurkoppling ELLER plan slutförd, inte vid prishål
+
+## Fixade buggar (session 2026-04-10)
+- **Bug 2**: En start-notis per kabelsession (ej per OCPP-transaktion)
+- **Bug 4**: Fördröjd SOC-uppdatering (15–60s) för färsk SOC i stopp-notis
+- **Bug 5**: SuspendedEV >60s → RemoteStop + stopp-notis
+- **Bug 6**: Energi/kostnad ackumuleras per kabelsession, inte per OCPP-tx
+- **Bug 11**: Stopp-notis hålls inne om plan har fler fönster (prishål-scenariot)
+
+## Tidigare verifierade punkter
+- ✅ Auto-start baserat på laddplan
+- ✅ Manuell start med grace period
+- ✅ Imorgondagens priser → laddplan uppdateras automatiskt
