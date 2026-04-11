@@ -374,6 +374,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._notified_stop_session: str | None = None    # avoid duplicate stop notifs
         self._start_notified_this_connection: bool = False  # Bug 2: prevent notification storms
         self._day_charging_dismissed: bool = False  # Bug 3: user dismissed day/night choice
+        self._charging_seen_this_session: bool = False  # Bug 10: guard stop-notif at restart
         self._suspended_ev_since: datetime | None = None  # Bug 5: SuspendedEV tracking
         # Cable session tracking (Bug 6): spans cable-in → cable-out
         self._cable_session_energy_kwh: float = 0.0
@@ -1284,6 +1285,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._soc_reread_done = True
             self._start_notified_this_connection = False  # Bug 2: reset for next connection
             self._day_charging_dismissed = False  # Bug 3: reset for next connection
+            self._charging_seen_this_session = False  # Bug 10: reset for next connection
 
         # ── Cable connected (Preparing) ──────────────────────────────────
         if status == "Preparing" and self._manual_stop_requested:
@@ -1310,6 +1312,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._last_connect_notify_time = datetime.now(timezone.utc)
             self._was_charging = False
             self._start_notified_this_connection = False  # Bug 2: reset for new connection
+            self._charging_seen_this_session = False  # Bug 10: reset for new connection
             self._notified_start_session = None  # allow new start-notif for coming session
             # Reset cost tracking for new session at cable connect
             self._session_total_kwh += self.ocpp.state.energy_kwh  # Fix 7: save previous sub-session energy
@@ -1352,6 +1355,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._cable_session_start_notified = True
             self._notified_start_session = state.session_id
             self._start_notified_this_connection = True
+            self._charging_seen_this_session = True  # Bug 10: mark that we saw charging start
             self._last_cost_energy_kwh = 0.0
             self._last_transaction_start = datetime.now(timezone.utc)
             plan = self.charge_plan
@@ -1363,13 +1367,13 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 estimated_end=self.estimated_completion,
             )
 
-        # ── Charging stopped (Bug 4: delayed 15s for fresh SOC) ─────────
+        # ── Charging stopped (Bug 10: guard + delayed 60s for fresh SOC) ─────────
         if (
             self._notify_on_stop
             and not is_charging
             and self._was_charging
             and self._notified_stop_session != state.session_id
-            and self._notified_start_session == state.session_id
+            and self._charging_seen_this_session  # Bug 10: only if we saw charging start in this instance
             and not (
                 self._preparing_timestamp is not None
                 and (datetime.now(timezone.utc) - self._preparing_timestamp).total_seconds() < 5
@@ -1389,23 +1393,36 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 )
             else:
                 self._notified_stop_session = state.session_id
+                self._charging_seen_this_session = False  # Bug 10: reset so same session doesn't trigger again
                 self._cable_session_stop_notified = True  # Prevent duplicate via _send_stop_notification()
-                elapsed = self.elapsed_seconds or 0
-                # Capture values now (energy/cost), but delay sending so SOC can update
-                _stop_energy = state.energy_kwh
-                _stop_cost = state.accumulated_cost
-                _stop_elapsed = elapsed
+                # Capture values now in closure variables (Bug 10)
+                captured_session_id = state.session_id
+                captured_energy = state.energy_kwh
+                captured_cost = state.accumulated_cost
+                captured_elapsed = self.elapsed_seconds or 0
+
+                # Trigger car SOC sync immediately (Bug 10)
+                try:
+                    self.hass.async_create_task(
+                        self.hass.services.async_call("kia_uvo", "force_update", {}, blocking=False)
+                    )
+                except Exception:
+                    pass  # Service may not exist (e.g., Skoda Enyaq)
 
                 async def _send_stop_notif(_now=None):
+                    # Guard: abort if a new session has started since we scheduled this
+                    if self.ocpp.state.session_id != captured_session_id:
+                        _LOGGER.debug("[Notify] Stopp-notis avbryts – ny session startad")
+                        return
                     self._update_soc_from_ha()  # refresh SOC one more time
                     self.notifier.on_charging_stopped(
                         soc_pct=self.ocpp.state.soc_percent,
-                        energy_kwh=_stop_energy,
-                        actual_cost_sek=_stop_cost,
-                        duration_minutes=_stop_elapsed // 60,
+                        energy_kwh=captured_energy,
+                        actual_cost_sek=captured_cost,
+                        duration_minutes=captured_elapsed // 60,
                     )
 
-                async_call_later(self.hass, 15, _send_stop_notif)
+                async_call_later(self.hass, 60, _send_stop_notif)  # Bug 10: 60s delay
 
         if self._was_charging and not is_charging:
             self._manual_start_requested = False  # charging ended, clear manual override
@@ -1644,6 +1661,23 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         num_phases=self.num_phases,
                         local_tz=local_tz,
                     ) if night_prices else None
+
+                    # Bug 3: Only send notification if day is actually cheaper than night
+                    day_is_cheaper = (
+                        night_plan is None
+                        or not night_plan.feasible
+                        or self.charge_plan.estimated_cost_sek < night_plan.estimated_cost_sek
+                    )
+                    if not day_is_cheaper:
+                        _LOGGER.debug(
+                            "[ChargePlanner] Dag-plan (%.2f SEK) inte billigare än natt (%.2f SEK), hoppar över notis",
+                            self.charge_plan.estimated_cost_sek,
+                            night_plan.estimated_cost_sek if night_plan else 0,
+                        )
+                        # Use night plan instead if it's cheaper and feasible
+                        if night_plan and night_plan.feasible:
+                            self.charge_plan = night_plan
+                        return
 
                     self.notifier.on_day_charging_chosen(
                         day_start=plan_start_local,
