@@ -65,6 +65,7 @@ from .const import (
     NOTIFY_ACTION_SELECT_VEHICLE,
     PLANNER_ALGO_GREEDY,
     PLANNER_ALGO_CONTIGUOUS,
+    SELECT_PLANNER_ALGORITHM,
     CONF_SOC_UNIT,
     VEHICLE_SOC_UNIT,
     SOC_UNIT_KWH,
@@ -331,7 +332,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
         # Runtime state
         self.charge_mode: str = CHARGE_MODE_SMART
-        self.planner_algorithm: str = PLANNER_ALGO_GREEDY
+        self.planner_algorithm: str = self.config.get(
+            SELECT_PLANNER_ALGORITHM, PLANNER_ALGO_GREEDY
+        )
         self.target_soc: float = 80.0
         self.target_kwh: float = 0.0
         self.current_price: float | None = None

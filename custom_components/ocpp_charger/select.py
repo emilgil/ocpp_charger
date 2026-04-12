@@ -128,6 +128,7 @@ class PlannerAlgorithmSelect(SelectEntity):
 
     def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
         self._coordinator = coordinator
+        self._entry = entry  # Bug 11: needed for persisting to entry.data
         self._attr_unique_id = f"{entry.entry_id}_{SELECT_PLANNER_ALGORITHM}"
         self._attr_name = "Planning Algorithm"
         self._attr_options = PLANNER_ALGORITHMS
@@ -150,6 +151,12 @@ class PlannerAlgorithmSelect(SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         self._coordinator.planner_algorithm = option
+        # Bug 11: Persist to entry.data so value survives HA restart
+        new_data = dict(self._entry.data)
+        new_data[SELECT_PLANNER_ALGORITHM] = option
+        self._coordinator.hass.config_entries.async_update_entry(
+            self._entry, data=new_data
+        )
         # Force immediate replan
         self._coordinator._last_plan_update = None
         self._coordinator._update_charge_plan()
