@@ -1787,6 +1787,17 @@ class OCPPCoordinator(DataUpdateCoordinator):
         cost_sek = self._cable_session_cost_sek
 
         async def _delayed(_now=None):
+            # Bug 12: Guard mot omstart/stale state
+            if not self.ocpp.state.cable_connected:
+                _LOGGER.debug("[Notify] _delayed: cable ej ansluten, avbryter stopp-notis")
+                return
+            if self.ocpp.state.charging:
+                _LOGGER.debug("[Notify] _delayed: laddning aktiv, avbryter stopp-notis")
+                return
+            if energy_kwh < 0.1:
+                _LOGGER.debug("[Notify] _delayed: energy_kwh=%.3f för lågt, avbryter stopp-notis", energy_kwh)
+                return
+
             self._update_soc_from_ha()
             self.notifier.on_charging_stopped(
                 soc_pct=self.ocpp.state.soc_percent,
