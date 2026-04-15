@@ -379,6 +379,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._day_charging_dismissed: bool = False  # Bug 3: user dismissed day/night choice
         self._charging_seen_this_session: bool = False  # Bug 10: guard stop-notif at restart
         self._suspended_ev_since: datetime | None = None  # Bug 5: SuspendedEV tracking
+        self._cable_was_available: bool = True  # Bug 13A: True only after genuine Available status
         # Cable session tracking (Bug 6): spans cable-in → cable-out
         self._cable_session_energy_kwh: float = 0.0
         self._cable_session_cost_sek: float = 0.0
@@ -815,6 +816,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 )
 
         if not self.ocpp.state.cable_connected:
+            return
+
+        # ── Bug 13B: SuspendedEV guard – car refuses charging, skip auto-start ──
+        connector_status = self.ocpp.state.connector_status or ""
+        if connector_status == "SuspendedEV":
+            _LOGGER.debug("[SmartCharge] SuspendedEV – bilen nekar laddning, skippar auto-start")
             return
 
         # ── Plan-based auto-start (act only when cable is connected) ─────
@@ -1289,6 +1296,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._start_notified_this_connection = False  # Bug 2: reset for next connection
             self._day_charging_dismissed = False  # Bug 3: reset for next connection
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
+            self._cable_was_available = True  # Bug 13A: genuine cable disconnect
+            _LOGGER.debug("[Bug13A] Available → cable_was_available=True")
 
         # ── Cable connected (Preparing) ──────────────────────────────────
         if status == "Preparing" and self._manual_stop_requested:
@@ -1296,16 +1305,29 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._manual_stop_requested = False
             return
 
+        # Bug 13A: Log when Preparing is skipped due to Garo internal reset
+        if (
+            status == "Preparing"
+            and self._last_connector_status_notify != "Preparing"
+            and not self._cable_was_available
+        ):
+            _LOGGER.debug(
+                "[Bug13A] Preparing utan föregående Available – Garo-reset, skippar Inkopplad-notis"
+            )
+
         if (
             self._notify_on_connect
             and status == "Preparing"
             and self._last_connector_status_notify != "Preparing"
             and not self._cable_session_notified_connect
+            and self._cable_was_available  # Bug 13A: require genuine Available before
             and (
                 self._last_connect_notify_time is None
                 or (datetime.now(timezone.utc) - self._last_connect_notify_time).total_seconds() > 10
             )
         ):
+            self._cable_was_available = False  # Bug 13A: consume the flag
+            _LOGGER.debug("[Bug13A] Genuine connect: cable_was_available consumed")
             self._notified_connect_session = state.session_id
             self._cable_session_notified_connect = True  # Fix 9: mark connect-notif sent
             self._preparing_timestamp = datetime.now(timezone.utc)
@@ -1324,7 +1346,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             # Bug 6: Reset cable session accumulators
             self._cable_session_energy_kwh = 0.0
             self._cable_session_cost_sek = 0.0
-            self._cable_session_start_notified = False
+            self._cable_session_start_notified = False  # Bug 13A: only reset on genuine connect
             self._cable_session_stop_notified = False
             self._cable_session_start_time = datetime.now(timezone.utc)
             _LOGGER.debug("[Session] Ny kabelsession – nollställer ackumulatorer")
