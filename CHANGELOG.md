@@ -1,5 +1,16 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-05-15: Bug 15 – Stale fasvärden efter laddningsstopp
+
+### Fix 15 – Per-fas ström nollställs vid varje MeterValues-anrop
+**Problem:** Efter RemoteStop visade `Charging Current`-sensorn felaktigt ~12 A trots att `charging=False` och `power=0 W`. Värdet kvarstod tills kabeln drogs ur. Rotorsak: `_current_l1/l2/l3` (instansvariabler i `OCPPChargerClient`) sätts vid varje MeterValues med fasdata men nollställs aldrig. När en periodisk `connectorId=0`-avläsning utan fasström anlände efter stopp, läste fasaggregeringen kvarvarande gamla värden.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `ocpp_client.py` | `_parse_meter_values()` | Nollställer `_current_l1/l2/l3 = None` i början av varje anrop, så stala värden aldrig återanvänds |
+
+---
+
 ## 2026-03-30: Fordonsväxling, planering och GitHub-release
 
 ### Fordonsval i push-notis

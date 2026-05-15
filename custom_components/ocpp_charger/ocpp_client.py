@@ -336,6 +336,12 @@ class OCPPClient:
 
     async def _parse_meter_values(self, payload: dict) -> None:
         """Extract meter values from MeterValues payload."""
+        # Reset per-phase accumulators so stale values from a previous MeterValues
+        # call are never re-applied when the new message contains no phase current data.
+        self._current_l1 = None
+        self._current_l2 = None
+        self._current_l3 = None
+
         # Sync transaction_id from MeterValues payload if we missed StartTransaction
         tx_id = payload.get("transactionId")
         if tx_id and self.state.transaction_id is None:

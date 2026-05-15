@@ -1,4 +1,6 @@
-# Todo – OCPP Charger bugfixar (2026-03-14)
+# ✅ GENOMFÖRD – OCPP Charger bugfixar (2026-03-14)
+# Granskad och verifierad 2026-04-10. Alla buggar är fixade.
+# Bug 7 undersökt – hypotesen var felaktig, koden är korrekt.
 
 ## Bug 1 – Målnivå stoppar inte laddningen i plan-läge
 **Symptom:** Bilen laddade till 88% trots att målnivån var satt till 80%.
@@ -451,6 +453,33 @@ def _update_soc_from_ha(self) -> None:
 ```
 
 **OBS:** `_soc_source` måste återställas till `"none"` eller `"entity"` i OCPP-mätvärdeshanteraren *efter* att ett OCPP SOC-värde processats, så att nästa cykel inte fastnar i `"ocpp"`-låsningen om OCPP slutar rapportera SOC.
+
+---
+
+## Bug 15 – Stale fasvärden ger felaktig ström efter laddningsstopp (2026-05-15) ✅
+
+**Symptom:** Efter RemoteStop visade `sensor.ev_charger_garocs_48671aa056e80_charging_current` ~12.1 A trots `charging=False` och `power=0 W`. Värdet kvarstod tills kabeln drogs ur.
+
+**Rotorsak:** `_current_l1/l2/l3` är instansvariabler på `OCPPChargerClient` som sätts i `_parse_meter_values()` när ett MeterValues-paket innehåller fasström, men nollställs aldrig. När den periodiska `connectorId=0`-energiavläsningen (utan fasström) anlände efter stopp, läste fasaggregeringen kvarvarande gamla värden och skrev över `state.current_a` med felaktig data.
+
+### Fix
+**`ocpp_client.py` – `_parse_meter_values()`**
+
+Nollställ per-fas-ackumulatorerna i början av varje anrop:
+
+```python
+async def _parse_meter_values(self, payload: dict) -> None:
+    """Extract meter values from MeterValues payload."""
+    # Reset per-phase accumulators so stale values from a previous MeterValues
+    # call are never re-applied when the new message contains no phase current data.
+    self._current_l1 = None
+    self._current_l2 = None
+    self._current_l3 = None
+
+    # Sync transaction_id from MeterValues payload if we missed StartTransaction
+    tx_id = payload.get("transactionId")
+    ...
+```
 
 ---
 
