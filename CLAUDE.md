@@ -140,6 +140,7 @@ _session_total_kwh: float                 # Fix 7: ackumulerad energi sedan kabe
 _suspended_ev_since: datetime | None      # SuspendedEV-detektion
 _cable_connect_time: datetime | None      # Fix 10: tid för kabelinkoppling
 _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
+_day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
 target_soc: float                         # 80.0 default
 battery_capacity_kwh: float               # 64.0 default
 num_phases: int                           # 3
@@ -217,6 +218,9 @@ Tre events, var och en skickas max en gång per session (dedup-guards via sessio
 | `on_charging_stopped` | `charging=False` efter aktiv laddning |
 
 Notiserna är åtgärdbara: `ocpp_use_day_charging` / `ocpp_use_night_charging`.
+
+### Närvarobaserat dagladdningserbjudande (Bug 18)
+När `allow_day_charging` är av (vardagars autoschema) men kabeln är inkopplad och någon av `PRESENCE_ENTITIES` (telefon/bilar, se `const.py`) är hemma efter `DAY_OFFER_EARLIEST_HOUR` (09:00), skickas `on_day_charging_chosen` **om** en dag-plan faktiskt blir billigare per kWh än natt-planen. Jämförelsen använder `avg_price_ore_kwh` (inte `estimated_cost_sek`), så en partiell natt-plan (innan morgondagens priser publicerats) suppresserar inte erbjudandet (Bug 17). Max en gång per kalenderdag (`_day_offer_notified_date`). "☀️ Dag"-knappen sätter `_force_day_plan=True`.
 
 ## OCPP-services (Developer Tools → Actions)
 | Service | Beskrivning |

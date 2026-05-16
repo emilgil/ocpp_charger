@@ -1,5 +1,36 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-05-16: Bug 16, 17, 18 – Replanering under laddning, korrekt dag/natt-jämförelse, närvarobaserat erbjudande
+
+### Bug 18 – Närvarobaserat dagladdningserbjudande (drift-import)
+Funktionen var deployad i drift sedan tidigare men aldrig committad till git. Importerad verbatim från `192.168.1.97`.
+
+| Fil | Tillägg |
+|-----|---------|
+| `const.py` | `DAY_OFFER_EARLIEST_HOUR`, `PRESENCE_ENTITIES`, `PRESENCE_HOME_STATES` (case-insensitive matchning för zonnamn) |
+| `__init__.py` | `_someone_home()` med per-tracker debug-logg, `_day_offer_notified_date`-guard, ny `elif`-gren i `_update_charge_plan()` med strukturerad skip-loggning per orsak |
+
+Trigger: kabel inkopplad + `allow_day_charging=False` + någon hemma efter 09:00 + dag-plan billigare än natt-plan. Max en gång per kalenderdag.
+
+### Bug 17 – Dag/natt-jämförelse använde fel mått
+**Problem:** Notisen "dag billigare än natt" hölls tillbaka när natt-planen var partiell (morgondagens priser ännu inte publicerade). `estimated_cost_sek` jämförde då 22 kWh natt mot 60 kWh dag — totalkostnaden i SEK blev artificiellt lägre för natt-planen även när medelpriset per kWh var högre.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `_update_charge_plan()` (Bug 3-gren) | Byt jämförelsen till `avg_price_ore_kwh`, uppdatera skip-logg till öre/kWh |
+| `__init__.py` | `_update_charge_plan()` (Bug 18-gren) | Samma fix i den närvarobaserade elif-grenen + info-loggen "Hemma efter..." |
+
+### Bug 16 – Plan uppdateras inte under aktiv laddning
+**Problem:** `_update_charge_plan()` var gated på `if not charging:` i `_async_update_data()`. När morgondagens priser anländer ~13:00 mitt under en pågående session ignorerades de tills laddningen avslutades. Bilen kunde då ladda i ett dyrt fönster trots billigare timmar i den uppdaterade prisdatan.
+
+Rotorsak: guarden var felplacerad — planeringen skriver bara till `self.charge_plan`. Pingpong-skyddet (RemoteStart/Stop-oscillation) hör hemma i `_update_smart_charging()` där det redan finns (`_last_remote_start`, 5-minuters block).
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `_async_update_data()` | Tagit bort `if not charging:`-villkoret runt `_update_charge_plan()` |
+
+---
+
 ## 2026-05-15: Bug 15 – Stale fasvärden efter laddningsstopp
 
 ### Fix 15 – Per-fas ström nollställs vid varje MeterValues-anrop

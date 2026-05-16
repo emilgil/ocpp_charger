@@ -483,6 +483,61 @@ async def _parse_meter_values(self, payload: dict) -> None:
 
 ---
 
+## Bug 16 – Plan uppdateras inte under aktiv laddning (2026-05-16) ✅
+
+**Symptom:** När morgondagens priser anländer ~13:00 mitt under en pågående session uppdateras inte laddplanen. Planen som beräknades tidigare på dagen (bara dagens priser) används till sessionen slutar — bilen kan ladda i dyrt fönster trots billigare timmar tillgängliga.
+
+**Rotorsak:** `_update_charge_plan()` var gated på `if not self.ocpp.state.charging:` i `_async_update_data()`. Guarden var felplacerad — planeringen skriver bara till `self.charge_plan`, det är `_update_smart_charging()` som agerar och som redan har pingpong-skydd via `_last_remote_start` (5-min block).
+
+### Fix
+**`__init__.py` – `_async_update_data()` (rad ~467)**
+
+```python
+# Före:
+if not self.ocpp.state.charging:
+    self._update_charge_plan()
+self._update_smart_charging()
+
+# Efter:
+# Bug 16: always replan so new tomorrow prices are picked up mid-charge.
+# Pingpong protection lives in _update_smart_charging via _last_remote_start.
+self._update_charge_plan()
+self._update_smart_charging()
+```
+
+---
+
+## Bug 17 – Dag/natt-jämförelse använde fel mått (2026-05-16) ✅
+
+**Symptom:** Notisen "dag billigare än natt" skickades aldrig, trots att dag faktiskt var 39% billigare per kWh (71.9 vs 117.6 öre/kWh). Logg: `Day-charging offer skipped: day plan not cheaper (day=43.90 SEK, night=25.97 SEK)`.
+
+**Rotorsak:** Natt-planen är ofta partiell tidigt på morgonen (morgondagens priser publiceras typiskt ~13:00). Då täcker den t.ex. bara 22 kWh av 60 — `estimated_cost_sek` blir artificiellt lägre fast medelpriset är högre. Måttet `avg_price_ore_kwh` är opåverkat av planens energimängd och är därför rätt jämförelse.
+
+### Fix
+**`__init__.py` – `_update_charge_plan()` (två platser)**
+
+Båda dag-vs-natt-jämförelserna byts från `estimated_cost_sek` till `avg_price_ore_kwh`:
+- Bug 3-grenen (rad ~1715): `day_is_cheaper = ... or self.charge_plan.avg_price_ore_kwh < night_plan.avg_price_ore_kwh`
+- Bug 18-grenen (rad ~1787): `if day_plan.feasible and day_plan.avg_price_ore_kwh < night_plan.avg_price_ore_kwh`
+
+Tillhörande loggar (info "Hemma efter..." + debug "skipped: day plan not cheaper") uppdaterade till `öre/kWh`-format.
+
+`notifier.on_day_charging_chosen(...)` får behålla `*_cost`-värdena eftersom de visas i notisen för slutanvändaren.
+
+---
+
+## Bug 18 – Närvarobaserat dagladdningserbjudande (drift-import 2026-05-16) ✅
+
+Funktionen var deployad på `192.168.1.97` sedan tidigare men aldrig committad till git. Importerad verbatim som en separat "drift recovery"-commit (`d768a87`).
+
+**Funktionalitet:** När `allow_day_charging=False` (vardagars autoschema), kabeln är inkopplad, någon från `PRESENCE_ENTITIES` är hemma efter `DAY_OFFER_EARLIEST_HOUR` (09:00), och en dag-plan blir billigare per kWh än natt-planen → skickar åtgärdbar notis. Max en gång per kalenderdag (`_day_offer_notified_date`).
+
+**Implementationsdetaljer:**
+- `_someone_home()` jämför `st.state.lower() in PRESENCE_HOME_STATES` — GPS-trackers rapporterar zonnamn med stort F ("Framsidan"), router-tracker rapporterar "home"
+- Strukturerad debug-logg per skip-orsak (dismissed, cable not connected, before 09:00, nobody home, etc.)
+
+---
+
 ## Tidigare öppna punkter (verifierade i kod 2026-03-14)
 - ✅ Auto-start baserat på laddplan – implementerat och korrekt
 - ✅ Manuell start med grace period – implementerat och korrekt

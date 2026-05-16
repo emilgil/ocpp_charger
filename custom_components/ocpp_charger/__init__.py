@@ -468,8 +468,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._check_vehicle_auto_detect()
         self._update_soc_from_ha()
         self._check_soc_reread()  # Fix 4: periodic SOC re-read after cable connect
-        if not self.ocpp.state.charging:
-            self._update_charge_plan()
+        # Bug 16: always replan so new tomorrow prices are picked up mid-charge.
+        # Pingpong protection lives in _update_smart_charging via _last_remote_start.
+        self._update_charge_plan()
         self._update_smart_charging()
         self._update_cost()
         self._update_eta()
@@ -1704,17 +1705,20 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         local_tz=local_tz,
                     ) if night_prices else None
 
-                    # Bug 3: Only send notification if day is actually cheaper than night
+                    # Bug 3 + Bug 17: Only send notification if day is actually cheaper per kWh.
+                    # Use avg_price_ore_kwh, not estimated_cost_sek — a partial night plan
+                    # (e.g. tomorrow's prices not yet published) has artificially low total
+                    # cost simply because it covers fewer kWh.
                     day_is_cheaper = (
                         night_plan is None
                         or not night_plan.feasible
-                        or self.charge_plan.estimated_cost_sek < night_plan.estimated_cost_sek
+                        or self.charge_plan.avg_price_ore_kwh < night_plan.avg_price_ore_kwh
                     )
                     if not day_is_cheaper:
                         _LOGGER.debug(
-                            "[ChargePlanner] Dag-plan (%.2f SEK) inte billigare än natt (%.2f SEK), hoppar över notis",
-                            self.charge_plan.estimated_cost_sek,
-                            night_plan.estimated_cost_sek if night_plan else 0,
+                            "[ChargePlanner] Dag-plan (%.1f öre/kWh) inte billigare än natt (%.1f öre/kWh), hoppar över notis",
+                            self.charge_plan.avg_price_ore_kwh,
+                            night_plan.avg_price_ore_kwh if night_plan else 0,
                         )
                         # Use night plan instead if it's cheaper and feasible
                         if night_plan and night_plan.feasible:
@@ -1774,15 +1778,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     local_tz=local_tz,
                     contiguous=_use_contiguous,
                 )
+                # Bug 17: compare avg_price_ore_kwh, not estimated_cost_sek. The night
+                # plan is often partial early in the day (tomorrow's prices not yet
+                # published), so its total cost is artificially low — comparing totals
+                # would suppress the offer even when the day is actually cheaper per kWh.
                 if (
                     day_plan.feasible
-                    and day_plan.estimated_cost_sek < night_plan.estimated_cost_sek
+                    and day_plan.avg_price_ore_kwh < night_plan.avg_price_ore_kwh
                 ):
                     _LOGGER.info(
-                        "[ChargePlanner] Hemma efter %02d:00 och dag (%.2f SEK) billigare än natt (%.2f SEK) – skickar erbjudande",
+                        "[ChargePlanner] Hemma efter %02d:00 och dag (%.1f öre/kWh) billigare än natt (%.1f öre/kWh) – skickar erbjudande",
                         DAY_OFFER_EARLIEST_HOUR,
-                        day_plan.estimated_cost_sek,
-                        night_plan.estimated_cost_sek,
+                        day_plan.avg_price_ore_kwh,
+                        night_plan.avg_price_ore_kwh,
                     )
                     self.notifier.on_day_charging_chosen(
                         day_start=day_plan.start.astimezone(local_tz),
@@ -1798,9 +1806,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 else:
                     _LOGGER.debug(
                         "[ChargePlanner] Day-charging offer skipped: day plan not cheaper "
-                        "(day=%.2f SEK feasible=%s, night=%.2f SEK)",
-                        day_plan.estimated_cost_sek, day_plan.feasible,
-                        night_plan.estimated_cost_sek,
+                        "(day=%.1f öre/kWh feasible=%s, night=%.1f öre/kWh)",
+                        day_plan.avg_price_ore_kwh, day_plan.feasible,
+                        night_plan.avg_price_ore_kwh,
                     )
 
     def _adjust_update_interval(self) -> None:
