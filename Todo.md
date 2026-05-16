@@ -538,6 +538,29 @@ Funktionen var deployad på `192.168.1.97` sedan tidigare men aldrig committad t
 
 ---
 
+## Feature 1 – Deadline Override Switch (2026-05-16) ✅
+
+**Bakgrund:** `DEFAULT_CHARGE_DEADLINE_HOUR = 6` användes alltid oavsett veckodag. På helger/semester begränsar en fast 06:00-deadline prisoptimeraren i onödan.
+
+**Ny switch "Deadline Override"** — flippar veckodag/helg-defaulten:
+
+| Dag | Switch AV | Switch PÅ |
+|-----|-----------|-----------|
+| Mån–fre | 06:00 (normalt) | Ingen deadline (semester) |
+| Lör–sön | Ingen deadline (normalt) | 06:00 (tidig avfärd) |
+
+"Ingen deadline" = sista tillgängliga prisintervallets sluttid (sista prisslot + 15 min).
+
+### Implementation
+- `const.py`: ny konstant `SWITCH_DEADLINE_OVERRIDE`
+- `switch.py`: ny klass `DeadlineOverrideSwitch` med `extra_state_attributes` som visar `override_active` + `effective_mode` ("06:00 deadline" / "Ingen deadline (semester)" / etc.). Toggle bypassar `_last_plan_update`-throttle.
+- `__init__.py`: ny `_compute_deadline(now_local, local_tz, all_prices)`-metod, anropas från `_update_charge_plan()`. Använder XOR (`(not is_weekend) ^ self.deadline_override`) för att avgöra om 06:00-deadline ska gälla.
+
+### Verifiering i drift
+Lördag 2026-05-16, override OFF → plan utökades från `23:45–06:00` (1 window) till `01:30–17:30` (8 windows). Bekräftar att deadline sätts till sista prisintervallets slut istället för nästa 06:00.
+
+---
+
 ## Tidigare öppna punkter (verifierade i kod 2026-03-14)
 - ✅ Auto-start baserat på laddplan – implementerat och korrekt
 - ✅ Manuell start med grace period – implementerat och korrekt

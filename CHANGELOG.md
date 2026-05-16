@@ -1,5 +1,26 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-05-16: Feature 1 – Deadline Override Switch (kontextmedveten helg/semester)
+
+Ny switch som flippar veckodag/helg-defaulten för 06:00-deadlinen:
+
+| Dag | Switch AV | Switch PÅ |
+|-----|-----------|-----------|
+| Mån–fre | 06:00 (normalt) | Ingen deadline (semester) |
+| Lör–sön | Ingen deadline (normalt) | 06:00 (tidig avfärd) |
+
+"Ingen deadline" sätter deadline till sista tillgängliga prisintervallets sluttid → planneraren får använda hela prisdatat.
+
+| Fil | Förändring |
+|-----|-----------|
+| `const.py` | +1 konstant `SWITCH_DEADLINE_OVERRIDE` |
+| `switch.py` | +1 klass `DeadlineOverrideSwitch` (ärver `CoordinatorEntity, SwitchEntity`), registrerad i `async_add_entities`. Toggle bypassar `_last_plan_update`-throttle + anropar `_update_charge_plan()` direkt för omedelbar effekt. |
+| `__init__.py` | +1 instansvariabel `deadline_override: bool = False`, deadline-blocket i `_update_charge_plan()` ersatt med anrop till ny `_compute_deadline(now_local, local_tz, all_prices)` |
+
+Verifierad i drift (lördag, override OFF): plan utökas från `23:45–06:00` (1 window) till `01:30–17:30` (8 windows) — planneraren använder hela prisdatat istället för att stoppa vid 06:00.
+
+---
+
 ## 2026-05-16: Bug 16, 17, 18 – Replanering under laddning, korrekt dag/natt-jämförelse, närvarobaserat erbjudande
 
 ### Bug 18 – Närvarobaserat dagladdningserbjudande (drift-import)

@@ -351,6 +351,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._day_charging_manual_override: bool = False  # True = user toggled manually
         self._force_day_plan: bool = False   # True after user picks day via notification
         self.allow_day_charging: bool = self._compute_allow_day_charging()
+        self.deadline_override: bool = False  # Feature 1: flip weekday/weekend deadline default
 
         # Notifications
         self.notifier = ChargerNotifier(
@@ -1280,6 +1281,44 @@ class OCPPCoordinator(DataUpdateCoordinator):
             return
         self.allow_day_charging = self._compute_allow_day_charging()
 
+    def _compute_deadline(
+        self,
+        now_local: datetime,
+        local_tz,
+        all_prices: list,
+    ) -> datetime:
+        """Return charging deadline based on weekday and deadline_override switch.
+
+        Weekday, override OFF → next 06:00 (normal).
+        Weekday, override ON  → end of last available price interval (vacation).
+        Weekend, override OFF → end of last available price interval (normal).
+        Weekend, override ON  → next 06:00 (early departure).
+        """
+        is_weekend = now_local.weekday() >= 5  # Sat=5, Sun=6
+        use_06_deadline = (not is_weekend) ^ self.deadline_override
+
+        if use_06_deadline:
+            today_deadline = datetime.combine(
+                now_local.date(),
+                dtime(DEFAULT_CHARGE_DEADLINE_HOUR, 0),
+                tzinfo=local_tz,
+            )
+            if today_deadline > now_local:
+                return today_deadline
+            return datetime.combine(
+                now_local.date() + timedelta(days=1),
+                dtime(DEFAULT_CHARGE_DEADLINE_HOUR, 0),
+                tzinfo=local_tz,
+            )
+
+        # No fixed deadline – use end of the last available price interval.
+        if all_prices:
+            last_time = max(_to_utc(iv["time"]) for iv in all_prices)
+            # Slot end = slot start + 15 min (quarterly intervals)
+            return (last_time + timedelta(minutes=15)).astimezone(local_tz)
+        # Fallback: 48h from now
+        return now_local + timedelta(hours=48)
+
     def _someone_home(self) -> bool:
         """Return True if any tracked person/vehicle is currently home."""
         home = False
@@ -1538,22 +1577,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             local_tz = tz.utc
 
         now_local = datetime.now(local_tz)
-        # Use the next upcoming deadline: today's if it's still in the future,
-        # otherwise tomorrow's. This handles the case where the car is connected
-        # at e.g. 03:00 and should charge before 06:00 the same day.
-        today_deadline = datetime.combine(
-            now_local.date(),
-            dtime(DEFAULT_CHARGE_DEADLINE_HOUR, 0),
-            tzinfo=local_tz,
-        )
-        if today_deadline > now_local:
-            deadline_local = today_deadline
-        else:
-            deadline_local = datetime.combine(
-                now_local.date() + timedelta(days=1),
-                dtime(DEFAULT_CHARGE_DEADLINE_HOUR, 0),
-                tzinfo=local_tz,
-            )
+        deadline_local = self._compute_deadline(now_local, local_tz, all_prices)
 
         # Energy needed – multi-vehicle: use active vehicle when cable connected (Bug 6)
         if len(self._vehicles) > 1:

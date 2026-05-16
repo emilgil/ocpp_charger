@@ -141,6 +141,7 @@ _suspended_ev_since: datetime | None      # SuspendedEV-detektion
 _cable_connect_time: datetime | None      # Fix 10: tid för kabelinkoppling
 _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
 _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
+deadline_override: bool                   # Feature 1: flippar veckodag/helg-default för 06:00-deadline
 target_soc: float                         # 80.0 default
 battery_capacity_kwh: float               # 64.0 default
 num_phases: int                           # 3
@@ -180,12 +181,13 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Charging | Aktivt laddande |
 | Charger Connected | OCPP WebSocket ansluten |
 
-### Switchar (3 st)
+### Switchar (4 st)
 | Switch | Beskrivning |
 |--------|-------------|
 | Auto Vehicle Detection | Auto-identifiera fordon vid inkoppling |
 | Override Charging Schedule | Manuell override av dag/natt-schema |
 | Allow Day Charging | Tillåt dagladdning i Smart-läge |
+| Deadline Override | Flippa veckodag/helg-default för 06:00-deadline (Feature 1) |
 
 ### Number-entiteter (5 st)
 | Number | Beskrivning |

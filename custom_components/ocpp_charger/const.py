@@ -170,6 +170,11 @@ SOC_UNITS        = [SOC_UNIT_PERCENT, SOC_UNIT_KWH]
 # Day charging allow switch
 SWITCH_ALLOW_DAY_CHARGING  = "allow_day_charging"
 
+# Deadline override switch — flips the weekday/weekend default.
+# Weekday: OFF=06:00 (normal), ON=no deadline (vacation).
+# Weekend: OFF=no deadline (normal), ON=06:00 (early departure).
+SWITCH_DEADLINE_OVERRIDE   = "deadline_override"
+
 # Presence-based day-charging offer:
 # When allow_day_charging is OFF (weekday auto-schedule) but someone/the car is
 # home after this hour, and a day plan is cheaper than night, offer day charging.
