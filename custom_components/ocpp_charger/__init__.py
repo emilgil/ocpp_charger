@@ -1294,6 +1294,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         Weekend, override OFF → end of last available price interval (normal).
         Weekend, override ON  → next 06:00 (early departure).
         """
+        from datetime import time as dtime  # not imported at module level
         is_weekend = now_local.weekday() >= 5  # Sat=5, Sun=6
         use_06_deadline = (not is_weekend) ^ self.deadline_override
 
