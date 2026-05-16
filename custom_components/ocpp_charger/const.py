@@ -170,6 +170,20 @@ SOC_UNITS        = [SOC_UNIT_PERCENT, SOC_UNIT_KWH]
 # Day charging allow switch
 SWITCH_ALLOW_DAY_CHARGING  = "allow_day_charging"
 
+# Presence-based day-charging offer:
+# When allow_day_charging is OFF (weekday auto-schedule) but someone/the car is
+# home after this hour, and a day plan is cheaper than night, offer day charging.
+DAY_OFFER_EARLIEST_HOUR = 9
+PRESENCE_ENTITIES = [
+    "device_tracker.skoda_enyaq_position",
+    "device_tracker.emil_s_s23_ultra",
+    "device_tracker.e_niro_location",
+]
+# A device_tracker counts as "home" when its lowercased state is one of these.
+# GPS trackers report the zone's friendly name (here: "Framsidan"); the router
+# tracker reports "home". Comparison is case-insensitive (see _someone_home).
+PRESENCE_HOME_STATES = {"home", "framsidan"}
+
 # Actionable notification actions
 NOTIFY_ACTION_USE_DAY        = "ocpp_use_day_charging"
 NOTIFY_ACTION_USE_NIGHT      = "ocpp_use_night_charging"

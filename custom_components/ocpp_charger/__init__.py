@@ -59,6 +59,9 @@ from .const import (
     VEHICLE_SOC_ENTITY,
     CHARGE_MODE_SMART,
     SWITCH_ALLOW_DAY_CHARGING,
+    DAY_OFFER_EARLIEST_HOUR,
+    PRESENCE_ENTITIES,
+    PRESENCE_HOME_STATES,
     NOTIFY_ACTION_USE_DAY,
     NOTIFY_ACTION_USE_NIGHT,
     NOTIFY_ACTION_DISMISS,
@@ -377,6 +380,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._notified_stop_session: str | None = None    # avoid duplicate stop notifs
         self._start_notified_this_connection: bool = False  # Bug 2: prevent notification storms
         self._day_charging_dismissed: bool = False  # Bug 3: user dismissed day/night choice
+        self._day_offer_notified_date = None  # date of last presence-based day-charging offer
         self._charging_seen_this_session: bool = False  # Bug 10: guard stop-notif at restart
         self._suspended_ev_since: datetime | None = None  # Bug 5: SuspendedEV tracking
         self._cable_was_available: bool = True  # Bug 13A: True only after genuine Available status
@@ -1275,6 +1279,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
             return
         self.allow_day_charging = self._compute_allow_day_charging()
 
+    def _someone_home(self) -> bool:
+        """Return True if any tracked person/vehicle is currently home."""
+        home = False
+        seen: list[str] = []
+        for entity_id in PRESENCE_ENTITIES:
+            st = self.hass.states.get(entity_id)
+            state = st.state if st is not None else "<missing>"
+            seen.append(f"{entity_id}={state}")
+            if st is not None and st.state.lower() in PRESENCE_HOME_STATES:
+                home = True
+        _LOGGER.debug("[Presence] someone_home=%s (%s)", home, ", ".join(seen))
+        return home
+
     def _check_notify_events(self) -> None:
         """Fire notifications on cable connect, charge start and charge stop."""
         state = self.ocpp.state
@@ -1713,6 +1730,77 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         night_end=night_plan.end.astimezone(local_tz) if night_plan and night_plan.feasible else None,
                         night_cost=night_plan.estimated_cost_sek if night_plan and night_plan.feasible else None,
                         night_avg_ore=night_plan.avg_price_ore_kwh if night_plan and night_plan.feasible else None,
+                    )
+
+        # ── Presence-based day-charging offer ─────────────────────────────────
+        # When day charging is OFF (weekday auto-schedule) but someone/the car is
+        # home after 09:00, offer day charging *if* a day plan is actually cheaper
+        # than the night plan. Sent at most once per calendar day.
+        elif not self.allow_day_charging and not self._force_day_plan:
+            someone_home = self._someone_home()
+            skip_reason = None
+            if self._day_charging_dismissed:
+                skip_reason = "day-choice dismissed this cable session"
+            elif not self.ocpp.state.cable_connected:
+                skip_reason = "cable not connected"
+            elif energy_needed <= 0:
+                skip_reason = "no energy needed"
+            elif not (self.charge_plan and self.charge_plan.feasible):
+                skip_reason = "no feasible night plan"
+            elif now_local.hour < DAY_OFFER_EARLIEST_HOUR:
+                skip_reason = f"before {DAY_OFFER_EARLIEST_HOUR:02d}:00"
+            elif self._day_offer_notified_date == now_local.date():
+                skip_reason = "already offered today"
+            elif not someone_home:
+                skip_reason = "nobody home"
+
+            if skip_reason is not None:
+                _LOGGER.debug(
+                    "[ChargePlanner] Day-charging offer skipped: %s (someone_home=%s)",
+                    skip_reason, someone_home,
+                )
+            else:
+                # self.charge_plan was built from night-only prices → it is the night plan.
+                night_plan = self.charge_plan
+                day_plan = plan_cheapest_window(
+                    interval_prices=all_prices,
+                    energy_needed_kwh=energy_needed,
+                    power_kw=power_kw,
+                    deadline=deadline_local,
+                    now=now_local,
+                    schedule_fn=_schedule_fn,
+                    voltage=DEFAULT_VOLTAGE,
+                    num_phases=self.num_phases,
+                    local_tz=local_tz,
+                    contiguous=_use_contiguous,
+                )
+                if (
+                    day_plan.feasible
+                    and day_plan.estimated_cost_sek < night_plan.estimated_cost_sek
+                ):
+                    _LOGGER.info(
+                        "[ChargePlanner] Hemma efter %02d:00 och dag (%.2f SEK) billigare än natt (%.2f SEK) – skickar erbjudande",
+                        DAY_OFFER_EARLIEST_HOUR,
+                        day_plan.estimated_cost_sek,
+                        night_plan.estimated_cost_sek,
+                    )
+                    self.notifier.on_day_charging_chosen(
+                        day_start=day_plan.start.astimezone(local_tz),
+                        day_end=day_plan.end.astimezone(local_tz),
+                        day_cost=day_plan.estimated_cost_sek,
+                        day_avg_ore=day_plan.avg_price_ore_kwh,
+                        night_start=night_plan.start.astimezone(local_tz),
+                        night_end=night_plan.end.astimezone(local_tz),
+                        night_cost=night_plan.estimated_cost_sek,
+                        night_avg_ore=night_plan.avg_price_ore_kwh,
+                    )
+                    self._day_offer_notified_date = now_local.date()
+                else:
+                    _LOGGER.debug(
+                        "[ChargePlanner] Day-charging offer skipped: day plan not cheaper "
+                        "(day=%.2f SEK feasible=%s, night=%.2f SEK)",
+                        day_plan.estimated_cost_sek, day_plan.feasible,
+                        night_plan.estimated_cost_sek,
                     )
 
     def _adjust_update_interval(self) -> None:
