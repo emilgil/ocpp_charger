@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import OCPPCoordinator
 from .const import (
-    ADHOC_VEHICLE_NAME, CHARGE_MODES, CONF_CHARGER_ID, CONF_VEHICLES,
+    ADHOC_VEHICLE_NAME, CHARGE_MODE_IMMEDIATE, CHARGE_MODES, CONF_CHARGER_ID, CONF_VEHICLES,
     DOMAIN, PLANNER_ALGORITHMS, PLANNER_ALGO_GREEDY, SELECT_PLANNER_ALGORITHM,
     VEHICLE_CAPACITY, VEHICLE_NAME, VEHICLE_SOC_ENTITY,
 )
@@ -60,6 +60,8 @@ class ChargeModeSelect(SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         self._coordinator.set_charge_mode(option)
+        if option == CHARGE_MODE_IMMEDIATE:
+            await self._coordinator.async_start_if_ready()
 
 
 class ActiveVehicleSelect(SelectEntity):

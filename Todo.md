@@ -590,6 +590,40 @@ if soc_reached or kwh_reached or plan_energy_reached:
 
 ---
 
+## Bug 20 – Byte till Immediate startar inte laddningen automatiskt (2026-05-17) ✅
+
+**Symptom:** Användaren byter laddläge till Immediate med kabeln inkopplad → ingenting händer, måste trycka Start manuellt.
+
+**Rotorsak:** `async_select_option()` i `select.py` anropade bara `set_charge_mode(option)` som bara uppdaterar `charge_mode`. Ingen logik triggade RemoteStart efter lägesbyte.
+
+### Fix
+**`__init__.py` – ny `async_start_if_ready()`-metod** (nära `async_start_charging`):
+```python
+async def async_start_if_ready(self) -> None:
+    state = self.ocpp.state
+    startable = state.connector_status in ("Preparing", "SuspendedEVSE")
+    if not startable or state.charging:
+        return
+    await self.async_start_charging()
+```
+
+**`select.py` – ChargeModeSelect**: importera `CHARGE_MODE_IMMEDIATE`, anropa hjälpmetoden efter `set_charge_mode`:
+```python
+async def async_select_option(self, option: str) -> None:
+    self._coordinator.set_charge_mode(option)
+    if option == CHARGE_MODE_IMMEDIATE:
+        await self._coordinator.async_start_if_ready()
+```
+
+### Edge cases (täckta av guarden)
+| Situation | Beteende |
+|-----------|----------|
+| Immediate vald, kabeln inte inkopplad | Inget händer |
+| Immediate vald, laddning pågår redan | Inget händer |
+| Immediate vald, status Preparing/SuspendedEVSE | RemoteStart skickas |
+
+---
+
 ## Tidigare öppna punkter (verifierade i kod 2026-03-14)
 - ✅ Auto-start baserat på laddplan – implementerat och korrekt
 - ✅ Manuell start med grace period – implementerat och korrekt

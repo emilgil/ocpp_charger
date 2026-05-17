@@ -1,5 +1,18 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-05-17: Bug 20 – Byte till Immediate startar inte laddningen automatiskt
+
+**Problem:** Vid byte till Immediate-läge medan kabeln är inkopplad (`Preparing` / `SuspendedEVSE`) hände ingenting. Användaren behövde trycka Start-knappen manuellt efteråt.
+
+**Fix:** Ny hjälpmetod `async_start_if_ready()` i koordinatorn som anropar `async_start_charging()` bara om chargern är i ett startbart läge (`Preparing`/`SuspendedEVSE`) och inte redan laddar. `async_select_option()` för läget anropar den när användaren väljer Immediate.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | +1 metod `async_start_if_ready()` (nära `async_start_charging`) med guard på `connector_status` + `charging` |
+| `select.py` | Importera `CHARGE_MODE_IMMEDIATE`; `async_select_option()` på charge-mode-select anropar `async_start_if_ready()` efter `set_charge_mode()` om option == Immediate |
+
+---
+
 ## 2026-05-17: Bug 19 – Goal-reached check stoppade laddningen trots manual override
 
 **Problem:** Vid Immediate-läge / manuell start stoppades laddningen ändå när `plan.energy_kwh` nåddes. Två window-check-grenar i `_update_smart_charging()` respekterade `_manual_start_requested`, men den tredje (goal-reached-blocket) gjorde det inte → upprepade RemoteStop utan notis under dagen.

@@ -1189,6 +1189,24 @@ class OCPPCoordinator(DataUpdateCoordinator):
         await self.ocpp.remote_stop_transaction()
         await self.async_refresh()
 
+    async def async_start_if_ready(self) -> None:
+        """Start charging if cable is connected and charger is idle.
+
+        Called when switching to Immediate mode. Guard around async_start_charging
+        so it only fires if the charger is in a startable state (Preparing or
+        SuspendedEVSE) and not already charging.
+        """
+        state = self.ocpp.state
+        startable = state.connector_status in ("Preparing", "SuspendedEVSE")
+        if not startable or state.charging:
+            _LOGGER.debug(
+                "[Immediate] auto-start skipped (status=%s charging=%s)",
+                state.connector_status, state.charging,
+            )
+            return
+        _LOGGER.info("[Immediate] Kabeln inkopplad – startar laddning automatiskt")
+        await self.async_start_charging()
+
     async def async_set_max_current(self, current_a: float) -> None:
         """Update max allowed current."""
         self.max_current = min(current_a, float(self.config.get(CONF_MAX_CURRENT, 32)))
