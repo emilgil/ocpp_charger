@@ -561,6 +561,35 @@ Lördag 2026-05-16, override OFF → plan utökades från `23:45–06:00` (1 win
 
 ---
 
+## Bug 19 – Goal-reached check stoppade trots manual override (2026-05-17) ✅
+
+**Symptom:** Användaren satte läge till Immediate, men laddningen stoppades upprepade gånger utan notis. Loggen visade:
+```
+[SmartCharge] Manual override aktiv, stoppar inte   ← window-check OK
+[SmartCharge] Mål nått (Energi 9.37 kWh >= planens 9.31 kWh), stoppar
+[OCPP] → CALL  action=RemoteStopTransaction
+```
+
+**Rotorsak:** `_update_smart_charging()` har tre stopp-vägar — window-check, goal-reached, priströskel-fallback. Window-check och priströskel-fallback respekterade `_manual_start_requested`, men goal-reached-blocket (rad ~889) gjorde det inte. När `state.energy_kwh >= plan.energy_kwh` kördes `_guarded_remote_stop()` ovillkorligt.
+
+`plan.energy_kwh` är en planerings-artefakt (beräknad från SOC/target), inte ett användarsatt mål som `target_soc` eller `target_kwh`. Immediate-läge betyder explicit *"jag bryr mig inte om planen, ladda nu"* — alla tre stopp-vägar ska respektera override.
+
+### Fix
+**`__init__.py` – `_update_smart_charging()` (rad ~895)**
+
+```python
+if soc_reached or kwh_reached or plan_energy_reached:
+    if state.charging:
+        # Bug 19: respect manual override (Immediate / user-started session).
+        # plan.energy_kwh is a planning artifact, not a user-set goal.
+        if self._manual_start_requested:
+            _LOGGER.info("[SmartCharge] Manual override aktiv, stoppar inte (mål nått men override aktiv)")
+            return
+        ...
+```
+
+---
+
 ## Tidigare öppna punkter (verifierade i kod 2026-03-14)
 - ✅ Auto-start baserat på laddplan – implementerat och korrekt
 - ✅ Manuell start med grace period – implementerat och korrekt

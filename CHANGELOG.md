@@ -1,5 +1,17 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-05-17: Bug 19 – Goal-reached check stoppade laddningen trots manual override
+
+**Problem:** Vid Immediate-läge / manuell start stoppades laddningen ändå när `plan.energy_kwh` nåddes. Två window-check-grenar i `_update_smart_charging()` respekterade `_manual_start_requested`, men den tredje (goal-reached-blocket) gjorde det inte → upprepade RemoteStop utan notis under dagen.
+
+`plan.energy_kwh` är en planerings-artefakt, inte ett användarsatt mål. När användaren explicit valt Immediate ska den respekteras även här.
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `_update_smart_charging()` | Lade till `if self._manual_start_requested: return` i goal-reached-blocket innan `_guarded_remote_stop()` |
+
+---
+
 ## 2026-05-16: Feature 1 – Deadline Override Switch (kontextmedveten helg/semester)
 
 Ny switch som flippar veckodag/helg-defaulten för 06:00-deadlinen:

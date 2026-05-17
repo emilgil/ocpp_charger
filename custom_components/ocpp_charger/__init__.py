@@ -890,6 +890,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
             if soc_reached or kwh_reached or plan_energy_reached:
                 if state.charging:
+                    # Bug 19: respect manual override (Immediate / user-started session).
+                    # plan.energy_kwh is a planning artifact, not a user-set goal.
+                    if self._manual_start_requested:
+                        _LOGGER.info("[SmartCharge] Manual override aktiv, stoppar inte (mål nått men override aktiv)")
+                        return
                     if soc_reached:
                         reason = f"SOC {soc:.0f}% >= mål {self.target_soc:.0f}%"
                     elif kwh_reached:
