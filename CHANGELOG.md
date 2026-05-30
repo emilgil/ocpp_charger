@@ -1,5 +1,25 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-05-30: Bug 21 – Dag/natt-notis skickas för ofta och kan visa passerade tider
+
+**Problem:** Upprepade actionable notiser ("Dagladdning är billigare") skickades under dagen utan att kabeln var inkopplad (2026-05-30: 10:02, 10:32, 11:49, 12:50, 17:06). 17:06-notisen visade fönster 09:45–16:15 – en tid som redan passerat.
+
+**Rotorsak:** Tröskeln för plan-shift-notis var 15 min (`> 900` sek), så naturlig drift av plan-starten under dagen triggade nya notiser. Det fanns heller ingen guard mot att visa notiser med plan-start i förflutet, och `_day_charging_dismissed`-flaggan saknade tidsbaserad nollställning.
+
+**Fix:**
+- Höjt plan-shift-tröskeln från 900 s till 7200 s (2 h)
+- Lade in guard som undertrycker notisen när `plan_start_local <= now_local` (debug-loggar "Dag-notis undertryckt")
+- Lade till `_day_charging_dismissed_until` som håller flaggan satt tills nästa lokala midnatt; återställs automatiskt i början av `_update_charge_plan()` när tiden passerats
+
+| Fil | Funktion | Ändring |
+|-----|----------|---------|
+| `__init__.py` | `_update_charge_plan()` | Tröskel 900 → 7200 s; ny guard på `plan_start_local <= now_local`; nollställning av dismissed-flagga när `now >= dismissed_until` |
+| `__init__.py` | `_handle_notification_action()` | Vid `NOTIFY_ACTION_DISMISS`: sätt `_day_charging_dismissed_until` till nästa lokala midnatt |
+| `__init__.py` | `OCPPCoordinator.__init__()` | Nytt fält `_day_charging_dismissed_until: datetime \| None` |
+| `__init__.py` | Cable→Available-reset | Nollställ även `_day_charging_dismissed_until` |
+
+---
+
 ## 2026-05-17: Bug 20 – Byte till Immediate startar inte laddningen automatiskt
 
 **Problem:** Vid byte till Immediate-läge medan kabeln är inkopplad (`Preparing` / `SuspendedEVSE`) hände ingenting. Användaren behövde trycka Start-knappen manuellt efteråt.

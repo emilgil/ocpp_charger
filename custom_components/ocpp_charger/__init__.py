@@ -154,6 +154,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         elif action == NOTIFY_ACTION_DISMISS:
             _LOGGER.info("[Notify] User dismissed day/night choice")
             coordinator._day_charging_dismissed = True
+            # Bug 21: håll dismissad till nästa lokala midnatt
+            import zoneinfo
+            local_tz = zoneinfo.ZoneInfo(coordinator.hass.config.time_zone)
+            now_local = datetime.now(local_tz)
+            midnight = (now_local + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            coordinator._day_charging_dismissed_until = midnight
             coordinator.set_allow_day_charging(False)
             coordinator._update_charge_plan()
             coordinator.async_set_updated_data(coordinator.ocpp.state)
@@ -381,6 +389,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._notified_stop_session: str | None = None    # avoid duplicate stop notifs
         self._start_notified_this_connection: bool = False  # Bug 2: prevent notification storms
         self._day_charging_dismissed: bool = False  # Bug 3: user dismissed day/night choice
+        self._day_charging_dismissed_until: datetime | None = None  # Bug 21: midnight reset
         self._day_offer_notified_date = None  # date of last presence-based day-charging offer
         self._charging_seen_this_session: bool = False  # Bug 10: guard stop-notif at restart
         self._suspended_ev_since: datetime | None = None  # Bug 5: SuspendedEV tracking
@@ -1376,6 +1385,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._soc_reread_done = True
             self._start_notified_this_connection = False  # Bug 2: reset for next connection
             self._day_charging_dismissed = False  # Bug 3: reset for next connection
+            self._day_charging_dismissed_until = None  # Bug 21
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
             _LOGGER.debug("[Bug13A] Available → cable_was_available=True")
@@ -1554,6 +1564,15 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """Recalculate the optimal charge window using forecast prices."""
         # Freeze plan for 5 minutes after RemoteStart to avoid oscillation
         now = datetime.now(timezone.utc)
+        # Bug 21: nollställ dismissed-flagga när midnatt passerats
+        if (
+            self._day_charging_dismissed
+            and self._day_charging_dismissed_until is not None
+            and now >= self._day_charging_dismissed_until
+        ):
+            _LOGGER.debug("[ChargePlanner] Återställer _day_charging_dismissed efter midnatt")
+            self._day_charging_dismissed = False
+            self._day_charging_dismissed_until = None
         if self._last_remote_start is not None:
             elapsed = (now - self._last_remote_start).total_seconds()
             if elapsed < 300:
@@ -1727,12 +1746,21 @@ class OCPPCoordinator(DataUpdateCoordinator):
             plan_start_local = self.charge_plan.start.astimezone(local_tz)
             plan_end_local   = self.charge_plan.end.astimezone(local_tz)
             if schedule.is_day_time(plan_start_local.time()):
-                # Only notify if plan changed significantly (new session or start shifted)
-                notify = (
-                    prev_plan is None
-                    or not prev_plan.feasible
-                    or abs((self.charge_plan.start - prev_plan.start).total_seconds()) > 900
-                )
+                # Bug 21: undertryck notis om plan-starten redan ligger i det förflutna
+                if plan_start_local <= now_local:
+                    _LOGGER.debug(
+                        "[ChargePlanner] Dag-notis undertryckt – plan_start %s redan passerad (now=%s)",
+                        plan_start_local.strftime("%H:%M"),
+                        now_local.strftime("%H:%M"),
+                    )
+                    notify = False
+                else:
+                    # Only notify if plan changed significantly (new session or start shifted)
+                    notify = (
+                        prev_plan is None
+                        or not prev_plan.feasible
+                        or abs((self.charge_plan.start - prev_plan.start).total_seconds()) > 7200  # Bug 21: 2h, was 900s
+                    )
                 if notify and not self._day_charging_dismissed:  # Bug 3: respect dismiss
                     # Calculate what night-only plan would cost for comparison
                     night_prices = [

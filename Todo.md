@@ -624,6 +624,69 @@ async def async_select_option(self, option: str) -> None:
 
 ---
 
+## Bug 21 – Dag/natt-notis skickas för ofta och kan visa passerade tider (2026-05-30) ✅
+
+**Symptom:** Upprepade actionable notiser ("Dagladdning är billigare") under dagen utan kabeln inkopplad (2026-05-30 kl 10:02, 10:32, 11:49, 12:50, 17:06). Notisen 17:06 visade fönstret 09:45–16:15 som redan passerat.
+
+**Rotorsak:**
+1. Plan-shift-tröskeln för notis var bara 15 min (`> 900` sek), så naturlig drift av plan-starten under dagen triggade nya notiser.
+2. Ingen guard mot att skicka notis med plan-start i förflutet.
+3. `_day_charging_dismissed`-flaggan fanns men nollställdes bara vid kabel-disconnect, inte över midnatt.
+
+### Fix
+
+**`__init__.py` – `_update_charge_plan()`** – plan-shift-tröskel höjd till 2 h:
+```python
+or abs((self.charge_plan.start - prev_plan.start).total_seconds()) > 7200  # Bug 21: 2h, was 900s
+```
+
+**`__init__.py` – `_update_charge_plan()`** – ny guard mot passerade tider:
+```python
+if schedule.is_day_time(plan_start_local.time()):
+    if plan_start_local <= now_local:
+        _LOGGER.debug("[ChargePlanner] Dag-notis undertryckt – plan_start %s redan passerad", ...)
+        notify = False
+    else:
+        notify = (...)
+```
+
+**`__init__.py` – `OCPPCoordinator.__init__()`** – nytt fält:
+```python
+self._day_charging_dismissed_until: datetime | None = None  # Bug 21: midnight reset
+```
+
+**`__init__.py` – `_update_charge_plan()`** – midnatts-reset direkt efter `now = datetime.now(timezone.utc)`:
+```python
+if (
+    self._day_charging_dismissed
+    and self._day_charging_dismissed_until is not None
+    and now >= self._day_charging_dismissed_until
+):
+    self._day_charging_dismissed = False
+    self._day_charging_dismissed_until = None
+```
+
+**`__init__.py` – `_handle_notification_action()`** – sätt `_dismissed_until` vid avvisning:
+```python
+elif action == NOTIFY_ACTION_DISMISS:
+    coordinator._day_charging_dismissed = True
+    import zoneinfo
+    local_tz = zoneinfo.ZoneInfo(coordinator.hass.config.time_zone)
+    now_local = datetime.now(local_tz)
+    midnight = (now_local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    coordinator._day_charging_dismissed_until = midnight
+    ...
+```
+
+### Verifiering
+```bash
+ssh root@192.168.1.97 "grep -E 'Dag-notis undertryckt|Återställer _day_charging_dismissed|7200' /config/ocpp_charger_debug.log"
+```
+
+Guarden mot passerade tider triggar bara när `allow_day_charging=True` + kabel inkopplad + plan-start i förflutet – exakt det scenariot som orsakade 17:06-notisen.
+
+---
+
 ## Tidigare öppna punkter (verifierade i kod 2026-03-14)
 - ✅ Auto-start baserat på laddplan – implementerat och korrekt
 - ✅ Manuell start med grace period – implementerat och korrekt
