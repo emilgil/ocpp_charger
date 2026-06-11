@@ -19,7 +19,7 @@ import charge_planner  # noqa: E402
 
 TZ = timezone.utc
 POWER_KW = 11.04          # 16 A × 230 V × 3 faser
-ENERGY_NEEDED = 22.0      # kWh → 8 slottar à 2.76 kWh
+ENERGY_NEEDED = 22.0      # kWh → 8 slottar à 2.76 kWh (22.08 kWh, OBS: bara 0.08 marginal)
 DEADLINE = datetime(2026, 6, 11, 6, 0, tzinfo=TZ)
 
 CHEAP_START = datetime(2026, 6, 11, 2, 30, tzinfo=TZ)
@@ -83,7 +83,10 @@ def test_slot_dropped_exactly_at_its_end():
     plan = plan_at(now, contiguous=True)
     assert plan.feasible, plan.message
     assert plan.start == datetime(2026, 6, 11, 2, 45, tzinfo=TZ), f"start={plan.start}"
-    assert plan.is_in_window(now), "laddningen ska fortsätta sömlöst in i nästa slot"
+    assert plan.is_in_window(now), (
+        "laddningen ska fortsätta sömlöst – täcks av nästa slot (02:45–03:00), "
+        "inte av 02:30-sloten som droppats"
+    )
 
 
 def test_future_plan_unchanged():
@@ -93,6 +96,34 @@ def test_future_plan_unchanged():
     assert plan.feasible, plan.message
     assert plan.start == CHEAP_START, f"start={plan.start}"
     assert not plan.is_in_window(now), "22:00 ligger före planfönstret"
+
+
+def test_price_gap_stops_at_slot_end():
+    """Bug 11-interaktion: vid prishål ska stoppet fortfarande ske vid slot-slut.
+
+    Greedy-plan med hål: billig slot 22:45–23:00, dyrt 23:00–23:15, billigt
+    från 23:15. Vid now == 23:00:00 droppas 22:45-sloten (slut <= now) och
+    is_in_window(23:00) ska vara False så att stop-logiken triggar i hålet.
+    """
+    gap_cheap_1 = datetime(2026, 6, 10, 22, 45, tzinfo=TZ)
+    gap_expensive = datetime(2026, 6, 10, 23, 0, tzinfo=TZ)
+    start = datetime(2026, 6, 10, 22, 0, tzinfo=TZ)
+    prices = []
+    for i in range(32):
+        t = start + timedelta(minutes=15 * i)
+        cheap = (t == gap_cheap_1) or (t >= gap_expensive + timedelta(minutes=15))
+        prices.append({"time": t, "value": 0.10 if cheap else 1.00})
+
+    now = datetime(2026, 6, 10, 23, 0, 0, tzinfo=TZ)
+    plan = charge_planner.plan_cheapest_window(
+        prices, ENERGY_NEEDED, POWER_KW, DEADLINE,
+        contiguous=False, now=now,
+    )
+    assert plan.feasible, plan.message
+    assert not plan.is_in_window(now), (
+        "23:00 ligger i prishålet – 22:45-sloten ska vara droppad och "
+        "stop-logiken ska trigga"
+    )
 
 
 if __name__ == "__main__":
