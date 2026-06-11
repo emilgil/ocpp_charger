@@ -238,7 +238,10 @@ def plan_cheapest_window(
     slots: list[dict] = []
     for iv in interval_prices:
         t_utc = _to_utc(iv["time"])
-        if t_utc < now_utc:
+        # Bug 22: keep the slot that contains `now` – filtering on slot *start*
+        # dropped the active slot mid-slot, shifting plan.start forward 15 min
+        # and triggering a false "Outside plan window" stop during charging.
+        if t_utc + interval_duration <= now_utc:
             continue
         if t_utc + interval_duration > deadline_utc:
             continue
