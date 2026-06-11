@@ -15,6 +15,26 @@
 
 ---
 
+## 2026-06-06: Feature 2 – Klickbar dashboard-URL i push-notiser
+
+Ny valfri inställning **Dashboard URL** under notis-konfigurationen. När den fylls i öppnas den angivna URL:en när användaren klickar på en push-notis (inte på en action-knapp). Lämnas fältet tomt är beteendet oförändrat.
+
+iOS och Android hanterar fältet olika i HA Companion-appen, så båda nycklarna injiceras alltid i `data`-blocket:
+- `data.url` – iOS
+- `data.clickAction` – Android
+
+Påverkar samtliga notiser: kabel-inkopplad, start, stopp, frånkopplad och det actionable dag/natt-erbjudandet. URL-värdet kan ändras via Options-flödet utan omstart (uppdateras via `_async_update_listener`).
+
+| Fil | Ändring |
+|-----|---------|
+| `const.py` | Ny konstant `CONF_NOTIFY_DASHBOARD_URL` |
+| `notifier.py` | `ChargerNotifier.__init__` tar emot `dashboard_url`; `_send()`, `on_cable_connected()` och `on_day_charging_chosen()` injicerar `url`/`clickAction` i `data`-blocket |
+| `__init__.py` | Skickar `dashboard_url` vid instansiering; `_async_update_listener` uppdaterar fältet live vid options-ändring |
+| `config_flow.py` | Nytt textfält i `async_step_initial_notify` (setup) och `async_step_edit_notify` (options) |
+| `strings.json`, `sv.json`, `translations/sv.json` | Etikett "Dashboard URL (öppnas vid notisklick)" |
+
+---
+
 ## 2026-05-30: Bug 21 – Dag/natt-notis skickas för ofta och kan visa passerade tider
 
 **Problem:** Upprepade actionable notiser ("Dagladdning är billigare") skickades under dagen utan att kabeln var inkopplad (2026-05-30: 10:02, 10:32, 11:49, 12:50, 17:06). 17:06-notisen visade fönster 09:45–16:15 – en tid som redan passerat.

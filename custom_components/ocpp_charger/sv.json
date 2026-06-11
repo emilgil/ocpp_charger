@@ -43,7 +43,8 @@
           "notify_target": "Notismåltjänst (notify.xxx)",
           "notify_on_connect": "Notis vid inkoppling",
           "notify_on_start": "Notis vid laddstart",
-          "notify_on_stop": "Notis vid laddstopp"
+          "notify_on_stop": "Notis vid laddstopp",
+          "notify_dashboard_url": "Dashboard URL (öppnas vid notisklick, valfritt)"
         }
       }
     },
@@ -127,6 +128,7 @@
           "notify_on_connect": "Notify on cable connect (planned start/end + cost)",
           "notify_on_start": "Notify when charging starts",
           "notify_on_stop": "Notify when charging stops (energy + actual cost)",
+          "notify_dashboard_url": "Dashboard URL (öppnas vid notisklick)",
           "send_test_notification": "Skicka en testnotis nu (bocka i och spara)"
         }
       },

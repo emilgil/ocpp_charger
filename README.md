@@ -104,6 +104,8 @@ Notiser skickas max en gång per session för varje händelse:
 
 Notiserna är åtgärdbara – du kan välja dag- eller nattladdning direkt från notisen.
 
+Du kan också ange en valfri **Dashboard URL** under notis-inställningarna. Är den ifylld öppnas dashboarden i HA Companion-appen när du klickar på notisen (lämnas tomt → notisen öppnar ingenting). Fungerar både på iOS (`data.url`) och Android (`data.clickAction`).
+
 ## Schema dag/natt
 
 Standard:

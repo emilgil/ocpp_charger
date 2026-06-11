@@ -158,6 +158,7 @@ CONF_NOTIFY_TARGET         = "notify_target"
 CONF_NOTIFY_ON_CONNECT     = "notify_on_connect"
 CONF_NOTIFY_ON_START       = "notify_on_start"
 CONF_NOTIFY_ON_STOP        = "notify_on_stop"
+CONF_NOTIFY_DASHBOARD_URL  = "notify_dashboard_url"
 DEFAULT_NOTIFY_TARGET      = ""
 
 # SOC entity unit

@@ -32,6 +32,7 @@ from .const import (
     CONF_NOTIFY_ON_CONNECT,
     CONF_NOTIFY_ON_START,
     CONF_NOTIFY_ON_STOP,
+    CONF_NOTIFY_DASHBOARD_URL,
     CONF_REST_AUTH_TYPE,
     CONF_REST_BASE_URL,
     CONF_REST_PASSWORD,
@@ -261,12 +262,13 @@ class OCPPChargerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure push notifications and price forecast entity."""
         if user_input is not None:
             return self._create_entry(extra={
-                CONF_PRICE_FORECAST_ENTITY: user_input.get(CONF_PRICE_FORECAST_ENTITY, "").strip(),
-                CONF_NOTIFY_ENABLED:    user_input.get(CONF_NOTIFY_ENABLED, False),
-                CONF_NOTIFY_TARGET:     user_input.get(CONF_NOTIFY_TARGET, ""),
-                CONF_NOTIFY_ON_CONNECT: user_input.get(CONF_NOTIFY_ON_CONNECT, True),
-                CONF_NOTIFY_ON_START:   user_input.get(CONF_NOTIFY_ON_START, True),
-                CONF_NOTIFY_ON_STOP:    user_input.get(CONF_NOTIFY_ON_STOP, True),
+                CONF_PRICE_FORECAST_ENTITY:  user_input.get(CONF_PRICE_FORECAST_ENTITY, "").strip(),
+                CONF_NOTIFY_ENABLED:         user_input.get(CONF_NOTIFY_ENABLED, False),
+                CONF_NOTIFY_TARGET:          user_input.get(CONF_NOTIFY_TARGET, ""),
+                CONF_NOTIFY_ON_CONNECT:      user_input.get(CONF_NOTIFY_ON_CONNECT, True),
+                CONF_NOTIFY_ON_START:        user_input.get(CONF_NOTIFY_ON_START, True),
+                CONF_NOTIFY_ON_STOP:         user_input.get(CONF_NOTIFY_ON_STOP, True),
+                CONF_NOTIFY_DASHBOARD_URL:   user_input.get(CONF_NOTIFY_DASHBOARD_URL, "").strip(),
             })
 
         notify_services = []
@@ -289,6 +291,7 @@ class OCPPChargerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Optional(CONF_NOTIFY_ON_CONNECT, default=True): bool,
             vol.Optional(CONF_NOTIFY_ON_START,   default=True): bool,
             vol.Optional(CONF_NOTIFY_ON_STOP,    default=True): bool,
+            vol.Optional(CONF_NOTIFY_DASHBOARD_URL, default=""): str,
         })
         return self.async_show_form(
             step_id="initial_notify",
@@ -597,6 +600,8 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 default=cfg.get(CONF_NOTIFY_ON_START, True)): bool,
             vol.Optional(CONF_NOTIFY_ON_STOP,
                 default=cfg.get(CONF_NOTIFY_ON_STOP, True)): bool,
+            vol.Optional(CONF_NOTIFY_DASHBOARD_URL,
+                default=cfg.get(CONF_NOTIFY_DASHBOARD_URL, "")): str,
             vol.Optional("send_test_notification", default=False): bool,
         })
         return self.async_show_form(step_id="edit_notify", data_schema=schema)

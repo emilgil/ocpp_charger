@@ -48,6 +48,7 @@ from .const import (
     CONF_NOTIFY_ON_CONNECT,
     CONF_NOTIFY_ON_START,
     CONF_NOTIFY_ON_STOP,
+    CONF_NOTIFY_DASHBOARD_URL,
     DEFAULT_CHARGE_DEADLINE_HOUR,
     SENSOR_PLAN_START,
     SENSOR_PLAN_END,
@@ -248,6 +249,7 @@ async def _async_update_listener(
     # Update notifier config
     coordinator.notifier.notify_target = entry.data.get(CONF_NOTIFY_TARGET, "")
     coordinator.notifier.enabled = entry.data.get(CONF_NOTIFY_ENABLED, False)
+    coordinator.notifier.dashboard_url = entry.data.get(CONF_NOTIFY_DASHBOARD_URL, "")
     coordinator._notify_on_connect = entry.data.get(CONF_NOTIFY_ON_CONNECT, True)
     coordinator._notify_on_start   = entry.data.get(CONF_NOTIFY_ON_START, True)
     coordinator._notify_on_stop    = entry.data.get(CONF_NOTIFY_ON_STOP, True)
@@ -366,6 +368,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             hass=hass,
             notify_target=self.config.get(CONF_NOTIFY_TARGET, ""),
             enabled=self.config.get(CONF_NOTIFY_ENABLED, False),
+            dashboard_url=self.config.get(CONF_NOTIFY_DASHBOARD_URL, ""),
         )
         self._notify_on_connect: bool = self.config.get(CONF_NOTIFY_ON_CONNECT, True)
         self._notify_on_start:   bool = self.config.get(CONF_NOTIFY_ON_START, True)

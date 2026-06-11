@@ -10,20 +10,33 @@ _LOGGER = logging.getLogger(__name__)
 class ChargerNotifier:
     """Sends HA notify service calls for charger events."""
 
-    def __init__(self, hass, notify_target: str, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        hass,
+        notify_target: str,
+        enabled: bool = True,
+        dashboard_url: str = "",
+    ) -> None:
         self.hass = hass
         self.notify_target = notify_target   # e.g. "notify.mobile_app_my_phone"
         self.enabled = enabled
+        self.dashboard_url = dashboard_url
 
     def _send(self, title: str, message: str) -> None:
         if not self.enabled or not self.notify_target:
             return
         try:
+            payload: dict = {"title": title, "message": message}
+            if self.dashboard_url:
+                payload["data"] = {
+                    "url": self.dashboard_url,           # iOS
+                    "clickAction": self.dashboard_url,   # Android
+                }
             self.hass.async_create_task(
                 self.hass.services.async_call(
                     "notify",
                     self.notify_target.replace("notify.", "", 1),
-                    {"title": title, "message": message},
+                    payload,
                 )
             )
             _LOGGER.info("[Notify] %s: %s", title, message)
@@ -86,11 +99,15 @@ class ChargerNotifier:
                 "title": "EV Laddning – Inkopplad",
                 "message": "\n".join(lines),
             }
+            data_block: dict = {}
             if actions:
-                payload["data"] = {
-                    "tag": "ocpp_cable_connected",
-                    "actions": actions,
-                }
+                data_block["tag"] = "ocpp_cable_connected"
+                data_block["actions"] = actions
+            if self.dashboard_url:
+                data_block["url"] = self.dashboard_url           # iOS
+                data_block["clickAction"] = self.dashboard_url   # Android
+            if data_block:
+                payload["data"] = data_block
             self.hass.async_create_task(
                 self.hass.services.async_call(
                     "notify",
@@ -175,6 +192,26 @@ class ChargerNotifier:
         if not self.enabled or not self.notify_target:
             return
         try:
+            data_block: dict = {
+                "tag": "ocpp_day_night_choice",
+                "actions": [
+                    {
+                        "action": NOTIFY_ACTION_USE_DAY,
+                        "title": f"☀️ Dag ({day_avg_ore:.0f} öre)",
+                    },
+                    {
+                        "action": NOTIFY_ACTION_USE_NIGHT,
+                        "title": f"🌙 Natt ({night_avg_ore:.0f} öre)" if night_avg_ore else "🌙 Natt",
+                    },
+                    {
+                        "action": NOTIFY_ACTION_DISMISS,
+                        "title": "🚫 Avsluta",
+                    },
+                ],
+            }
+            if self.dashboard_url:
+                data_block["url"] = self.dashboard_url           # iOS
+                data_block["clickAction"] = self.dashboard_url   # Android
             self.hass.async_create_task(
                 self.hass.services.async_call(
                     "notify",
@@ -182,23 +219,7 @@ class ChargerNotifier:
                     {
                         "title": "EV Laddning – Välj period",
                         "message": msg,
-                        "data": {
-                            "tag": "ocpp_day_night_choice",
-                            "actions": [
-                                {
-                                    "action": NOTIFY_ACTION_USE_DAY,
-                                    "title": f"☀️ Dag ({day_avg_ore:.0f} öre)",
-                                },
-                                {
-                                    "action": NOTIFY_ACTION_USE_NIGHT,
-                                    "title": f"🌙 Natt ({night_avg_ore:.0f} öre)" if night_avg_ore else "🌙 Natt",
-                                },
-                                {
-                                    "action": NOTIFY_ACTION_DISMISS,
-                                    "title": "🚫 Avsluta",
-                                },
-                            ]
-                        },
+                        "data": data_block,
                     },
                 )
             )

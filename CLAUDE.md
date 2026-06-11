@@ -223,6 +223,9 @@ Tre events, var och en skickas max en gång per session (dedup-guards via sessio
 
 Notiserna är åtgärdbara: `ocpp_use_day_charging` / `ocpp_use_night_charging`.
 
+### Klickbar dashboard-URL (Feature 2)
+Valfritt fält `CONF_NOTIFY_DASHBOARD_URL` i notis-konfigurationen. När det är satt injicerar `ChargerNotifier` `data.url` (iOS) + `data.clickAction` (Android) i alla notispayloads så att klick på notisen öppnar dashboarden i HA Companion-appen. Tomt fält → oförändrat beteende. Live-uppdateras via `_async_update_listener` utan omstart.
+
 ### Närvarobaserat dagladdningserbjudande (Bug 18)
 När `allow_day_charging` är av (vardagars autoschema) men kabeln är inkopplad och någon av `PRESENCE_ENTITIES` (telefon/bilar, se `const.py`) är hemma efter `DAY_OFFER_EARLIEST_HOUR` (09:00), skickas `on_day_charging_chosen` **om** en dag-plan faktiskt blir billigare per kWh än natt-planen. Jämförelsen använder `avg_price_ore_kwh` (inte `estimated_cost_sek`), så en partiell natt-plan (innan morgondagens priser publicerats) suppresserar inte erbjudandet (Bug 17). Max en gång per kalenderdag (`_day_offer_notified_date`). "☀️ Dag"-knappen sätter `_force_day_plan=True`.
 
