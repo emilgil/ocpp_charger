@@ -1,5 +1,20 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-11: Bug 22 – Planen skiftade framåt mid-slot och stoppade pågående laddning
+
+**Problem:** Under nattladdning (plan 02:30–04:45) laddade bilen bara ~5 min per kvart: laddning 02:30–02:35, paus till 02:45, osv – ~30 % effektiv laddtid. När planen räknades om mid-slot (möjligt sedan Bug 16) filtrerade slot-filtret bort den aktiva sloten (slottar vars **start** passerats droppades), `plan.start` hoppade 15 min framåt och "Outside plan window"-logiken stoppade laddningen. 10 minuter senare auto-startade nästa slot och loopen upprepades hela natten.
+
+**Fix:** Slot-filtret i `plan_cheapest_window()` filtrerar nu på slot-**slut** i stället för slot-start – sloten som innehåller `now` behålls i planen.
+
+**Känd accepterad bieffekt:** Den aktiva sloten energiräknas som hel slot (max ~0,7 kWh överskattning, självkorrigerande vid nästa slot-gräns).
+
+| Fil | Ändring |
+|-----|---------|
+| `charge_planner.py` | Slot-filter: `t_utc < now_utc` → `t_utc + interval_duration <= now_utc` |
+| `tests/test_charge_planner_bug22.py` | Nytt fristående regressionstest (6 fall, körs med `python3`, ingen HA-installation krävs) |
+
+---
+
 ## 2026-05-30: Bug 21 – Dag/natt-notis skickas för ofta och kan visa passerade tider
 
 **Problem:** Upprepade actionable notiser ("Dagladdning är billigare") skickades under dagen utan att kabeln var inkopplad (2026-05-30: 10:02, 10:32, 11:49, 12:50, 17:06). 17:06-notisen visade fönster 09:45–16:15 – en tid som redan passerat.

@@ -70,8 +70,8 @@ Dessa setters anropar `_update_charge_plan()` direkt:
 ### Grace period (90s)
 Ingen stop-logik körs inom 90 sekunder efter `StartTransaction`. Förhindrar att en nyss startad session stoppas omedelbart av stop-logiken.
 
-### Plan-frysning under laddning
-`_update_charge_plan()` anropas **inte** när `state.charging == True`. Förhindrar att planen räknas om och oscillerar under pågående laddning.
+### Plan-omräkning under laddning (Bug 16 + Bug 22)
+`_update_charge_plan()` körs även under aktiv laddning (sedan Bug 16, för att morgondagens priser ska plockas upp mitt i en session). Slot-filtret i `plan_cheapest_window()` behåller den slot som innehåller `now` – det filtrerar på slot-**slut**, inte slot-start (Bug 22) – så att planen inte skiftar 15 min framåt mid-slot och triggar falsk "Outside plan window"-stopp. Regressionstest: `tests/test_charge_planner_bug22.py`.
 
 ### Plan-frysning efter RemoteStart (5 min)
 `_last_remote_start` sätts när auto-start skickas. `_update_charge_plan()` blockeras i 5 minuter därefter för att undvika oscillation i uppstartsfasen.
