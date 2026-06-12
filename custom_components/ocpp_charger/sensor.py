@@ -42,6 +42,7 @@ from .const import (
     SENSOR_SOC,
     SENSOR_STATUS,
     SENSOR_TOTAL_COST,
+    SENSOR_CHARGE_WINDOWS,
 )
 
 
@@ -75,6 +76,7 @@ async def async_setup_entry(
         ChargeCapacitySensor(coordinator, entry),
         PlannerSavingsSensor(coordinator, entry),
         TotalChargingCostSensor(coordinator, entry),
+        ChargeWindowsSensor(coordinator, entry),
     ]
     async_add_entities(entities)
 
@@ -616,3 +618,25 @@ class PlannerSavingsSensor(OCPPSensorBase):
             attrs["alt_avg_ore_kwh"] = alt.avg_price_ore_kwh
             attrs["alt_windows"] = len(alt.active_intervals)
         return attrs
+
+
+class ChargeWindowsSensor(OCPPSensorBase):
+    """Current charge plan as structured time-blocks with planned + actual energy."""
+
+    def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, SENSOR_CHARGE_WINDOWS, "Charge Windows")
+        self._attr_icon = "mdi:calendar-clock"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> int:
+        """Number of slots in the current plan."""
+        return len(self._coord._charge_windows)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        meta = self._coord._charge_windows_meta
+        slots = self._coord._charge_windows
+        if not meta:
+            return {"slots": []}
+        return {**meta, "slots": slots}
