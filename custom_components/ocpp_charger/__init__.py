@@ -1756,6 +1756,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             **_common_kwargs, contiguous=not _use_contiguous,
         )
         self._alt_plan = alt_plan
+        self._rebuild_charge_windows()  # Bug 24: synka charge-windows-sensorn direkt vid planändring
 
         # Notify if day charging allowed and plan lands in daytime
         if (
@@ -1819,6 +1820,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         # Use night plan instead if it's cheaper and feasible
                         if night_plan and night_plan.feasible:
                             self.charge_plan = night_plan
+                        self._rebuild_charge_windows()  # Bug 24: synka efter natt-switch
                         return
 
                     self.notifier.on_day_charging_chosen(
