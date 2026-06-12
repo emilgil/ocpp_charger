@@ -198,3 +198,4 @@ NOTIFY_ACTION_SELECT_VEHICLE = "ocpp_select_vehicle_"  # prefix; append vehicle 
 
 # Cumulative cost sensor
 SENSOR_TOTAL_COST = "total_charging_cost"
+SENSOR_CHARGE_WINDOWS = "charge_windows"   # Feature 3: structured charge-plan slots
