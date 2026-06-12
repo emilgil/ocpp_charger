@@ -1,5 +1,25 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-12: Feature 4 – Manuell deadline via textinmatning (ersätter Deadline Override-switch)
+
+**Vad:** Ny text-entitet `text.ocpp_manual_deadline` där användaren skriver in ett klockslag `HH:MM` som laddningsdeadline. Tomt fält = automatiskt beteende (vardag 06:00, helg ingen fast deadline). Passerad tid idag → imorgon samma tid. Fältet rensas automatiskt vid kabelurkoppling. **Deadline Override-switchen (Feature 1) tas bort.**
+
+**Bakgrundsbug:** Den gamla `deadline_override`-flaggan (bool i minnet) nollställdes av konkurrerande uppdateringscykler. `manual_deadline_str` sparas därför persistent via Store (nyckel `"manual_deadline"`) och skrivs direkt vid varje ändring (`await _save_state()`) samt vid urkoppling (`hass.async_create_task(self._save_state())`).
+
+**Design:** Deadline-logiken bröts ut till en ren, stdlib-only-modul `deadline.py` (`parse_hhmm` + `compute_deadline`), testbar fristående precis som `charge_planner.py`. `_compute_deadline()` blev en tunn wrapper; `text.py` återanvänder `parse_hhmm` för validering (intervallkoll 0–23/0–59, så `24:00` avvisas).
+
+| Fil | Ändring |
+|-----|---------|
+| `deadline.py` | Ny modul: `parse_hhmm()` + `compute_deadline()` |
+| `text.py` | Ny `text`-plattform: `ManualDeadlineText` |
+| `__init__.py` | Fält `manual_deadline_str` (Store save/load), tunn `_compute_deadline`, rensa+spara vid Available, `Platform.TEXT`, borttagen `deadline_override` |
+| `switch.py` | Borttagen `DeadlineOverrideSwitch` (klass + registrering + import) |
+| `tests/test_deadline.py` | 11 fristående enhetstester (`python3 tests/test_deadline.py`) |
+
+**Status:** Implementerad och lokalt verifierad (11 deadline-tester PASS, alla moduler kompilerar). **Ännu ej deployad till live-HA** (deploy pausad på användarens begäran). Vid deploy: den gamla `switch.*_deadline_override`-entiteten blir föräldralös i registret och kan raderas manuellt.
+
+---
+
 ## 2026-06-12: Feature 3 – Charge Windows-sensor
 
 **Vad:** Ny diagnostisk sensor `sensor.ocpp_charge_windows` som exponerar `charge_plan` som strukturerade tidsblock (slots). Varje slot loggar planerad energi och viktat pris; när sloten är avklarad fylls faktisk överförd energi i post-hoc via kumulativ kabelsessionenergi. `native_value` = antal slots, attributen innehåller plan-metadata + `slots`-lista. Används för felsökning och bakgrundsvisualisering.

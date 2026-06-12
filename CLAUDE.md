@@ -45,6 +45,8 @@ custom_components/ocpp_charger/
   smart_charge.py      – Prisbeslut (fallback när ingen plan finns)
   charge_planner.py    – Optimal laddplanering baserat på spotpriser
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
+  deadline.py          – Feature 4: parse_hhmm + compute_deadline (stdlib-only, testbar)
+  text.py              – Feature 4: ManualDeadlineText (HH:MM-deadline)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
   manifest.json
@@ -147,7 +149,7 @@ _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
 _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
 _day_charging_dismissed: bool             # Bug 3/21: användaren tryckt "🚫 Avsluta"
 _day_charging_dismissed_until: datetime | None  # Bug 21: nollställs vid lokal midnatt
-deadline_override: bool                   # Feature 1: flippar veckodag/helg-default för 06:00-deadline
+manual_deadline_str: str                  # Feature 4: HH:MM-deadline (persisterad via Store), "" = automatisk
 target_soc: float                         # 80.0 default
 battery_capacity_kwh: float               # 64.0 default
 num_phases: int                           # 3
@@ -188,13 +190,17 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Charging | Aktivt laddande |
 | Charger Connected | OCPP WebSocket ansluten |
 
-### Switchar (4 st)
+### Switchar (3 st)
 | Switch | Beskrivning |
 |--------|-------------|
 | Auto Vehicle Detection | Auto-identifiera fordon vid inkoppling |
 | Override Charging Schedule | Manuell override av dag/natt-schema |
 | Allow Day Charging | Tillåt dagladdning i Smart-läge |
-| Deadline Override | Flippa veckodag/helg-default för 06:00-deadline (Feature 1) |
+
+### Text-entiteter (1 st)
+| Text | Beskrivning |
+|------|-------------|
+| Manual Deadline | HH:MM-deadline (Feature 4). Tom = automatisk (vardag 06:00 / helg ingen). Rensas vid urkoppling. Persisterad via Store. |
 
 ### Number-entiteter (5 st)
 | Number | Beskrivning |
@@ -261,8 +267,27 @@ Snapshots i `_charge_windows_energy_at_slot_start` nycklas på slot-start-ISO.
 `native_value` = antal slots; attribut = plan-metadata + `slots`-lista. OBS: vid infeasible/ingen plan
 behålls senaste slots (rensas ej) – `calculated_at` visar åldern.
 
+## Manuell deadline (Feature 4)
+Text-entiteten `text.ocpp_manual_deadline` ersätter den gamla **Deadline Override-switchen** (Feature 1,
+borttagen). Användaren skriver in ett klockslag `HH:MM` som laddningsdeadline; tomt fält → automatiskt
+beteende (vardag 06:00, helg ingen fast deadline). Om tiden redan passerat idag → imorgon samma tid.
+
+**Ren logik i `deadline.py`** (stdlib-only, testbar fristående; `tests/test_deadline.py`, 11 tester):
+- `parse_hhmm(value)` – `"H:MM"`/`"HH:MM"` → `(hour, minute)` med intervallkoll (0–23, 0–59), annars `None`.
+- `compute_deadline(now_local, local_tz, all_prices, manual_deadline_str, deadline_hour)` – prioritet
+  manuell → vardag 06:00 → helg sista prisintervall +15 min → fallback 48h. `_compute_deadline()` i
+  `__init__.py` är en tunn wrapper; `text.py` återanvänder `parse_hhmm` för validering.
+
+**Persistens (bakgrundsbug):** `manual_deadline_str` sparas/läses via Store (`_save_state`/`_load_state`,
+nyckel `"manual_deadline"`) eftersom det gamla in-memory-värdet nollställdes av konkurrerande
+uppdateringscykler. `async_set_value` anropar `await _save_state()` direkt; vid kabelurkoppling
+(status `Available`) rensas fältet och sparas via `hass.async_create_task(self._save_state())`.
+
+OBS: den gamla `switch.*_deadline_override`-entiteten blir föräldralös i entitetsregistret efter deploy –
+radera manuellt via Inställningar → Enheter & tjänster → Entiteter.
+
 ## Persistens (Store)
-`self._store` (HA Storage) sparar `cable_connected` och `transaction_id` mellan omstarter.
+`self._store` (HA Storage) sparar `cable_connected`, `transaction_id` och `manual_deadline` (Feature 4) mellan omstarter.
 - `_save_state()` anropas i varje `_async_update_data()`-cykel
 - `_load_state()` anropas i `_delayed_soc_refresh()` (10s efter HA-start)
 
