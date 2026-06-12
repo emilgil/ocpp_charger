@@ -92,6 +92,7 @@ from .current_schedule import CurrentSchedule
 from .rest_client import ChargerRestClient
 from .charge_planner import ChargePlan, plan_cheapest_window, _to_utc
 from .charge_windows import build_charge_windows, update_windows_actual
+from .deadline import compute_deadline
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
 
@@ -367,7 +368,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._day_charging_manual_override: bool = False  # True = user toggled manually
         self._force_day_plan: bool = False   # True after user picks day via notification
         self.allow_day_charging: bool = self._compute_allow_day_charging()
-        self.deadline_override: bool = False  # Feature 1: flip weekday/weekend deadline default
+        self.manual_deadline_str: str = ""  # Feature 4: HH:MM deadline, or "" for automatic
 
         # Notifications
         self.notifier = ChargerNotifier(
@@ -522,6 +523,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "cable_session_energy_kwh": self._cable_session_energy_kwh,
             "cable_session_cost_sek": self._cable_session_cost_sek,
             "charge_mode": self.charge_mode,
+            "manual_deadline": self.manual_deadline_str,
             "target_soc": self.target_soc,
             "target_kwh": self.target_kwh,
             "active_vehicle_name": self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None,
@@ -547,6 +549,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.ocpp.state.total_cost = data.get("total_cost", 0.0)
             self._cable_session_energy_kwh = data.get("cable_session_energy_kwh", 0.0)
             self._cable_session_cost_sek = data.get("cable_session_cost_sek", 0.0)
+            self.manual_deadline_str = data.get("manual_deadline", "")
             self._last_cost_energy_kwh = data.get("energy_kwh", 0.0)
             if data.get("session_start"):
                 try:
@@ -1352,38 +1355,18 @@ class OCPPCoordinator(DataUpdateCoordinator):
         local_tz,
         all_prices: list,
     ) -> datetime:
-        """Return charging deadline based on weekday and deadline_override switch.
+        """Return the charging deadline (Feature 4).
 
-        Weekday, override OFF → next 06:00 (normal).
-        Weekday, override ON  → end of last available price interval (vacation).
-        Weekend, override OFF → end of last available price interval (normal).
-        Weekend, override ON  → next 06:00 (early departure).
+        Delegates to deadline.compute_deadline: a manual HH:MM value wins;
+        otherwise weekday → 06:00, weekend → end of available price data.
         """
-        from datetime import time as dtime  # not imported at module level
-        is_weekend = now_local.weekday() >= 5  # Sat=5, Sun=6
-        use_06_deadline = (not is_weekend) ^ self.deadline_override
-
-        if use_06_deadline:
-            today_deadline = datetime.combine(
-                now_local.date(),
-                dtime(DEFAULT_CHARGE_DEADLINE_HOUR, 0),
-                tzinfo=local_tz,
-            )
-            if today_deadline > now_local:
-                return today_deadline
-            return datetime.combine(
-                now_local.date() + timedelta(days=1),
-                dtime(DEFAULT_CHARGE_DEADLINE_HOUR, 0),
-                tzinfo=local_tz,
-            )
-
-        # No fixed deadline – use end of the last available price interval.
-        if all_prices:
-            last_time = max(_to_utc(iv["time"]) for iv in all_prices)
-            # Slot end = slot start + 15 min (quarterly intervals)
-            return (last_time + timedelta(minutes=15)).astimezone(local_tz)
-        # Fallback: 48h from now
-        return now_local + timedelta(hours=48)
+        return compute_deadline(
+            now_local,
+            local_tz,
+            all_prices,
+            manual_deadline_str=self.manual_deadline_str,
+            deadline_hour=DEFAULT_CHARGE_DEADLINE_HOUR,
+        )
 
     def _someone_home(self) -> bool:
         """Return True if any tracked person/vehicle is currently home."""
@@ -1421,6 +1404,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._day_charging_dismissed_until = None  # Bug 21
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
+            self.manual_deadline_str = ""    # Feature 4: clear manual deadline on disconnect
+            self._last_plan_update = None    # Feature 4: force re-plan with automatic deadline
+            self.hass.async_create_task(self._save_state())  # Feature 4: persist the clear
             _LOGGER.debug("[Bug13A] Available → cable_was_available=True")
 
         # ── Cable connected (Preparing) ──────────────────────────────────
