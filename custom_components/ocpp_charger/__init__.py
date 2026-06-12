@@ -91,6 +91,7 @@ from .smart_charge import SmartChargeController
 from .current_schedule import CurrentSchedule
 from .rest_client import ChargerRestClient
 from .charge_planner import ChargePlan, plan_cheapest_window, _to_utc
+from .charge_windows import build_charge_windows, update_windows_actual
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
 
@@ -357,6 +358,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self.estimated_remaining_minutes: int | None = None
         self.charge_plan: ChargePlan | None = None
         self._alt_plan: ChargePlan | None = None
+        # Feature 3: Charge Windows sensor state
+        self._charge_windows: list[dict] = []                       # per-slot plan + actual
+        self._charge_windows_meta: dict = {}                        # plan metadata
+        self._charge_windows_energy_at_slot_start: dict[str, float] = {}  # start-ISO → kWh baseline
+        self._charge_windows_plan_ref: "ChargePlan | None" = None   # identity guard for rebuilds
         self._last_plan_update: datetime | None = None
         self._day_charging_manual_override: bool = False  # True = user toggled manually
         self._force_day_plan: bool = False   # True after user picks day via notification
@@ -484,6 +490,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
         # Bug 16: always replan so new tomorrow prices are picked up mid-charge.
         # Pingpong protection lives in _update_smart_charging via _last_remote_start.
         self._update_charge_plan()
+        self._rebuild_charge_windows()          # Feature 3
+        self._update_charge_windows_actual()    # Feature 3
         self._update_smart_charging()
         self._update_cost()
         self._update_eta()
@@ -1911,6 +1919,71 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         day_plan.avg_price_ore_kwh, day_plan.feasible,
                         night_plan.avg_price_ore_kwh,
                     )
+
+    def _rebuild_charge_windows(self) -> None:
+        """Feature 3: rebuild _charge_windows from the current charge_plan.
+
+        Only rebuilds when charge_plan is a new object (identity guard), so
+        `calculated_at` reflects the actual replan time rather than every
+        ~10 s update cycle.  actual_energy_kwh is preserved across rebuilds by
+        build_charge_windows() (matched on slot start-ISO).
+        """
+        plan = self.charge_plan
+        if not plan or not plan.feasible:
+            return
+        if plan is self._charge_windows_plan_ref:
+            return  # unchanged since last rebuild
+        self._charge_windows_plan_ref = plan
+
+        import zoneinfo
+        try:
+            local_tz = zoneinfo.ZoneInfo(self.hass.config.time_zone)
+        except Exception:
+            local_tz = timezone.utc
+
+        self._charge_windows = build_charge_windows(
+            plan.active_intervals,
+            plan.intervals,
+            self._charge_windows,
+            datetime.now(timezone.utc),
+            local_tz,
+        )
+
+        vehicle_name = (
+            self.active_vehicle.get(VEHICLE_NAME, "Unknown")
+            if self.active_vehicle else "Unknown"
+        )
+        self._charge_windows_meta = {
+            "calculated_at": datetime.now(local_tz).isoformat(),
+            "vehicle": vehicle_name,
+            "soc_percent": self.ocpp.state.soc_percent,
+            "charge_mode": self.charge_mode,
+            "planned_energy_kwh": plan.energy_kwh,
+            "estimated_cost_sek": plan.estimated_cost_sek,
+            "avg_price_ore_kwh": plan.avg_price_ore_kwh,
+            "feasible": plan.feasible,
+            "partial": plan.partial,
+        }
+        _LOGGER.debug(
+            "[ChargeWindows] Rebuilt %d slots vehicle=%s soc=%s",
+            len(self._charge_windows), vehicle_name, self.ocpp.state.soc_percent,
+        )
+
+    def _update_charge_windows_actual(self) -> None:
+        """Feature 3: fill actual_energy_kwh for completed slots via cable-session
+        cumulative energy. Cheap; safe to call every update cycle."""
+        if not self._charge_windows:
+            return
+        current_cumulative = self._cable_session_energy_kwh + (
+            self.ocpp.state.energy_kwh
+            if self.ocpp.state.transaction_id is not None else 0.0
+        )
+        update_windows_actual(
+            self._charge_windows,
+            self._charge_windows_energy_at_slot_start,
+            current_cumulative,
+            datetime.now(timezone.utc),
+        )
 
     def _adjust_update_interval(self) -> None:
         """Speed up or slow down polling based on current charger state."""
