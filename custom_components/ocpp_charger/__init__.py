@@ -790,6 +790,31 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 pass
         _LOGGER.debug("[SmartCharge] Seeded price history with %d interval prices", count)
 
+    def _charging_goal_reached(self) -> tuple[bool, str]:
+        """Return (reached, reason) when the charging goal is met.
+
+        The goal counts as reached when any of these hold:
+          • SOC has reached the configured target_soc
+          • delivered energy has reached the user target_kwh
+          • delivered energy has reached the plan's planned energy
+
+        Used in two places so auto-start and auto-stop stay symmetric: the stop
+        branch ends an active session, and the auto-start branch suppresses a
+        fresh RemoteStart within an open plan window. Without the latter the two
+        ping-pong every ~5 min once SOC hits target while the window is still
+        open (Bug 23).
+        """
+        state = self.ocpp.state
+        plan = self.charge_plan
+        soc = state.soc_percent
+        if soc is not None and self.target_soc > 0 and soc >= self.target_soc:
+            return True, f"SOC {soc:.0f}% >= mål {self.target_soc:.0f}%"
+        if self.target_kwh > 0 and state.energy_kwh >= self.target_kwh:
+            return True, f"Energi {state.energy_kwh:.2f} kWh >= mål {self.target_kwh:.2f} kWh"
+        if plan and plan.energy_kwh > 0 and state.energy_kwh >= plan.energy_kwh:
+            return True, f"Energi {state.energy_kwh:.2f} kWh >= planens {plan.energy_kwh:.2f} kWh"
+        return False, ""
+
     def _update_smart_charging(self) -> None:
         """Apply smart charging logic."""
         # Debounce: avoid running from both callback and update cycle within 2s
@@ -844,6 +869,13 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
         # ── Plan-based auto-start (act only when cable is connected) ─────
         if _auto_start_in_window:
+            # Bug 23: don't auto-start if the charging goal is already reached.
+            # Otherwise auto-start and the goal-reached stop ping-pong every
+            # ~5 min (300s RemoteStart guard) while the plan window stays open.
+            _goal_reached, _goal_reason = self._charging_goal_reached()
+            if _goal_reached:
+                _LOGGER.info("[SmartCharge] Auto-start undertryckt – mål redan nått (%s)", _goal_reason)
+                return
             # Bug 5: Don't start a new transaction if one is already active
             if self.ocpp.state.transaction_id is not None:
                 _LOGGER.debug(
@@ -895,25 +927,15 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
         if self.charge_mode == CHARGE_MODE_SMART and plan and plan.feasible and plan.active_intervals:
             # ── Goal reached check (Bug 1) – stop regardless of window ──
-            soc = state.soc_percent
-            soc_reached = soc is not None and self.target_soc > 0 and soc >= self.target_soc
-            kwh_reached = self.target_kwh > 0 and state.energy_kwh >= self.target_kwh
-            plan_energy_reached = plan.energy_kwh > 0 and state.energy_kwh >= plan.energy_kwh
-
-            if soc_reached or kwh_reached or plan_energy_reached:
+            goal_reached, goal_reason = self._charging_goal_reached()
+            if goal_reached:
                 if state.charging:
                     # Bug 19: respect manual override (Immediate / user-started session).
                     # plan.energy_kwh is a planning artifact, not a user-set goal.
                     if self._manual_start_requested:
                         _LOGGER.info("[SmartCharge] Manual override aktiv, stoppar inte (mål nått men override aktiv)")
                         return
-                    if soc_reached:
-                        reason = f"SOC {soc:.0f}% >= mål {self.target_soc:.0f}%"
-                    elif kwh_reached:
-                        reason = f"Energi {state.energy_kwh:.2f} kWh >= mål {self.target_kwh:.2f} kWh"
-                    else:
-                        reason = f"Energi {state.energy_kwh:.2f} kWh >= planens {plan.energy_kwh:.2f} kWh"
-                    _LOGGER.info("[SmartCharge] Mål nått (%s), stoppar", reason)
+                    _LOGGER.info("[SmartCharge] Mål nått (%s), stoppar", goal_reason)
                     self._guarded_remote_stop(now_utc)
                 return
 

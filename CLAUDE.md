@@ -82,6 +82,9 @@ Ingen stop-logik körs inom 90 sekunder efter `StartTransaction`. Förhindrar at
 - Användaren klickar Stopp (`async_stop_charging()`)
 - Auto-start tar över (RemoteStart från `_update_smart_charging()`)
 
+### Symmetrisk mål-nått-koll (Bug 23)
+`_charging_goal_reached() -> (bool, str)` är den gemensamma mål-nått-källan (SOC ≥ target_soc, eller energi ≥ target_kwh, eller energi ≥ plan-energi). Den anropas i **både** stopp-grenen och auto-start-grenen i `_update_smart_charging()`. Innan Bug 23 kollade auto-start bara `plan.is_in_window()`, så när målet nåddes i ett öppet planfönster stoppade stopp-logiken medan auto-start startade om → 0 kWh-pingpong var 5:e minut tills fönstret krympte. Nu avstår auto-start (`Auto-start undertryckt – mål redan nått`) eftersom grenarna delar villkor. OBS: `_update_charge_plan()` har en egen, medvetet annorlunda mål-koll (utan plan-energi-villkoret – cirkulärt) och delar **inte** hjälpmetoden.
+
 ## Nyckelkonstanter (const.py)
 ```python
 DEFAULT_CHARGE_DEADLINE_HOUR        = 6      # Laddning klar senast 06:00

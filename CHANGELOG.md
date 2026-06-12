@@ -1,5 +1,17 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-12: Bug 23 – Auto-start och mål-nått-stopp pingpongade när målet nåddes i öppet planfönster
+
+**Problem:** När mål-SOC nåddes mitt i ett fortfarande öppet planfönster (natten 2026-06-12 kl ~04:14, Skoda Enyaq, mål 60%) skickade HA sex korta RemoteStart/RemoteStop-cykler à 0 kWh fram till att fönstret krympte (~05:10). Orsak: auto-start-grenen i `_update_smart_charging()` kollade bara `plan.is_in_window()`, aldrig om målet redan var nått, medan stopp-grenen stoppade på mål-nått. De två slogs mot varandra. 300s-guarden begränsade bara frekvensen (var 5:e min) och 15s-stopp-debouncen skyddade bara stopp-sidan. Ofarligt (0 kWh, ingen kostnad) men slitage + loggbrus. Bilen var inte inblandad – dess egen gräns stod på 80%.
+
+**Fix:** Mål-nått-logiken bröts ut till hjälpmetoden `_charging_goal_reached()` som nu anropas i **både** stopp- och auto-start-grenen. Auto-start avstår (`Auto-start undertryckt – mål redan nått`) när målet är nått, så grenarna inte längre kan vara oense.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | Ny `_charging_goal_reached()`; auto-start-gren avstår vid mål nått; stopp-gren refaktorerad att dela samma villkor |
+
+---
+
 ## 2026-06-11: Bug 22 – Planen skiftade framåt mid-slot och stoppade pågående laddning
 
 **Problem:** Under nattladdning (plan 02:30–04:45) laddade bilen bara ~5 min per kvart: laddning 02:30–02:35, paus till 02:45, osv – ~30 % effektiv laddtid. När planen räknades om mid-slot (möjligt sedan Bug 16) filtrerade slot-filtret bort den aktiva sloten (slottar vars **start** passerats droppades), `plan.start` hoppade 15 min framåt och "Outside plan window"-logiken stoppade laddningen. 10 minuter senare auto-startade nästa slot och loopen upprepades hela natten.
