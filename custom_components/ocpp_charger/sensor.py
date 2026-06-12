@@ -629,9 +629,10 @@ class ChargeWindowsSensor(OCPPSensorBase):
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
-    def native_value(self) -> int:
-        """Number of slots in the current plan."""
-        return len(self._coord._charge_windows)
+    def native_value(self) -> str | None:
+        """Tidpunkt för senaste planberäkning – ändras vid varje omräkning."""
+        meta = self._coord._charge_windows_meta
+        return meta.get("calculated_at") if meta else None
 
     @property
     def extra_state_attributes(self) -> dict:
