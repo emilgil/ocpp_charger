@@ -1,5 +1,23 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-12: Feature 3 – Charge Windows-sensor
+
+**Vad:** Ny diagnostisk sensor `sensor.ocpp_charge_windows` som exponerar `charge_plan` som strukturerade tidsblock (slots). Varje slot loggar planerad energi och viktat pris; när sloten är avklarad fylls faktisk överförd energi i post-hoc via kumulativ kabelsessionenergi. `native_value` = antal slots, attributen innehåller plan-metadata + `slots`-lista. Används för felsökning och bakgrundsvisualisering.
+
+**Design:** Den rena logiken lever i en ny stdlib-only-modul `charge_windows.py` (ingen HA-import → testbar fristående precis som `charge_planner.py`). Koordinatorn anropar två tunna wrappers i `_async_update_data()` efter `_update_charge_plan()`. Rebuild körs bara när planen är ett nytt objekt (identitetsguard), så `calculated_at` speglar verklig omräkning. Energisnapshots nycklas på slot-start-ISO så att de överlever planomräkningar som ändrar slot-ordning.
+
+| Fil | Ändring |
+|-----|---------|
+| `charge_windows.py` | Ny modul: `build_charge_windows()` + `update_windows_actual()` |
+| `__init__.py` | Fält `_charge_windows`/`_charge_windows_meta`/`_charge_windows_energy_at_slot_start`/`_charge_windows_plan_ref`; wrappers `_rebuild_charge_windows()` + `_update_charge_windows_actual()`; anrop i `_async_update_data()` |
+| `sensor.py` | Ny klass `ChargeWindowsSensor` + registrering |
+| `const.py` | `SENSOR_CHARGE_WINDOWS = "charge_windows"` |
+| `tests/test_charge_windows.py` | 8 fristående enhetstester (`python3 tests/test_charge_windows.py`) |
+
+**Deployad och verifierad** 2026-06-12: komponenten laddar utan fel, `[ChargeWindows] Rebuilt 1 slots`-debugrad bekräftar att rebuild körs end-to-end, varje uppdateringscykel `success: True`.
+
+---
+
 ## 2026-06-12: Bug 23 – Auto-start och mål-nått-stopp pingpongade när målet nåddes i öppet planfönster
 
 **Problem:** När mål-SOC nåddes mitt i ett fortfarande öppet planfönster (natten 2026-06-12 kl ~04:14, Skoda Enyaq, mål 60%) skickade HA sex korta RemoteStart/RemoteStop-cykler à 0 kWh fram till att fönstret krympte (~05:10). Orsak: auto-start-grenen i `_update_smart_charging()` kollade bara `plan.is_in_window()`, aldrig om målet redan var nått, medan stopp-grenen stoppade på mål-nått. De två slogs mot varandra. 300s-guarden begränsade bara frekvensen (var 5:e min) och 15s-stopp-debouncen skyddade bara stopp-sidan. Ofarligt (0 kWh, ingen kostnad) men slitage + loggbrus. Bilen var inte inblandad – dess egen gräns stod på 80%.

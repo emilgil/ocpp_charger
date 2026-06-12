@@ -34,7 +34,7 @@ custom_components/ocpp_charger/
   ocpp_client.py       – WebSocket OCPP 1.6-server, ChargerState
   config_flow.py       – Setup flow (4 steg) + options flow
   const.py             – Alla konstanter
-  sensor.py            – 21 sensorer
+  sensor.py            – 22 sensorer
   binary_sensor.py     – 3 binära sensorer
   number.py            – 5 number-entiteter
   select.py            – 3 select-entiteter
@@ -44,6 +44,7 @@ custom_components/ocpp_charger/
   current_schedule.py  – Dag/natt-schema
   smart_charge.py      – Prisbeslut (fallback när ingen plan finns)
   charge_planner.py    – Optimal laddplanering baserat på spotpriser
+  charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
   manifest.json
@@ -155,7 +156,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 
 ## Entiteter
 
-### Sensorer (21 st)
+### Sensorer (22 st)
 | Sensor | Beskrivning |
 |--------|-------------|
 | Status | Connector status (Available, Charging, etc.) |
@@ -178,6 +179,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Chargeable Amount | % av laddmål som kan uppnås |
 | Planner Savings | SEK skillnad mellan Greedy och Contiguous |
 | Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
+| Charge Windows | Diagnostisk: laddplanens slots med planerad + faktisk energi (Feature 3) |
 
 ### Binära sensorer (3 st)
 | Sensor | Beskrivning |
@@ -238,6 +240,26 @@ När `allow_day_charging` är av (vardagars autoschema) men kabeln är inkopplad
 | `ocpp_charger.get_configuration` | Hämtar Garo-konfiguration, svar på event `ocpp_charger_ocpp_response` |
 | `ocpp_charger.change_configuration` | Ändrar Garo-konfiguration |
 | `ocpp_charger.rest_call` | Gör REST-anrop via integrationen |
+
+## Charge Windows-sensor (Feature 3)
+Diagnostisk sensor `sensor.ocpp_charge_windows` som exponerar `charge_plan` som strukturerade
+tidsblock (slots) med planerad energi/pris per slot samt post-hoc faktisk energi när sloten är klar.
+
+**Ren logik i `charge_windows.py`** (stdlib-only, ingen HA-import → testbar fristående som
+`charge_planner.py`; tester i `tests/test_charge_windows.py`, körs med `python3 tests/test_charge_windows.py`):
+- `build_charge_windows(active_intervals, intervals, existing_slots, now, local_tz)` – bygger slot-dicts;
+  bevarar `actual_energy_kwh` mellan omräkningar via slot-start-ISO.
+- `update_windows_actual(windows, snapshots, current_cumulative_kwh, now)` – fyller `actual_energy_kwh`
+  för avklarade slots (snapshot vid slotstart, delta vid slotslut).
+
+**Koordinator-wrappers** (`__init__.py`): `_rebuild_charge_windows()` och `_update_charge_windows_actual()`
+anropas i `_async_update_data()` efter `_update_charge_plan()`. Rebuild körs bara när `charge_plan`
+är ett nytt objekt (identitetsguard `_charge_windows_plan_ref`) så att `calculated_at` speglar verklig
+omräkning, inte varje 10s-cykel. Energikälla: `_cable_session_energy_kwh` (+ aktiv tx-energi).
+Snapshots i `_charge_windows_energy_at_slot_start` nycklas på slot-start-ISO.
+
+`native_value` = antal slots; attribut = plan-metadata + `slots`-lista. OBS: vid infeasible/ingen plan
+behålls senaste slots (rensas ej) – `calculated_at` visar åldern.
 
 ## Persistens (Store)
 `self._store` (HA Storage) sparar `cable_connected` och `transaction_id` mellan omstarter.
