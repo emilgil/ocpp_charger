@@ -1,5 +1,19 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-12: Bug 24 – Charge Windows-sensorn uppdaterades inte vid manuell planändring
+
+**Problem:** När användaren bytte planeringsalgoritm (Greedy/Contiguous) – eller ändrade något annat som anropar `_update_charge_plan()` direkt (target_soc, charge_mode m.m.) – uppdaterades inte `sensor.*_charge_windows` (`calculated_at`/`slots`) förrän nästa polling-cykel (~5 min). Orsak: `_rebuild_charge_windows()` anropades bara från `_async_update_data()`, inte i den direkta setter-kodvägen.
+
+**Fix:** `_rebuild_charge_windows()` anropas nu även inuti `_update_charge_plan()` på två ställen: direkt efter att `charge_plan`/`_alt_plan` beräknats (täcker huvudvägen + närvarobaserad dag-gren) och före natt-switch-returen (täcker omtilldelningen till `night_plan`). Objektidentitetsguarden gör det per-cykel-anropet i `_async_update_data()` till en no-op, så ingen dubbel-rebuild i steady state. Anropet i `_async_update_data()` behålls (hanterar post-hoc `actual_energy`).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_rebuild_charge_windows()`-anrop tillagda i `_update_charge_plan()` (efter `_alt_plan` + före natt-switch-return) |
+
+**Verifiering:** kompilerar, befintliga enhetstester gröna, 4 `_rebuild_charge_windows`-referenser. Beteendetest (live): byt algoritm → `calculated_at` uppdateras inom sekunder utan att vänta på polling-cykeln.
+
+---
+
 ## 2026-06-12: Feature 4 – Manuell deadline via textinmatning (ersätter Deadline Override-switch)
 
 **Vad:** Ny text-entitet `text.ocpp_manual_deadline` där användaren skriver in ett klockslag `HH:MM` som laddningsdeadline. Tomt fält = automatiskt beteende (vardag 06:00, helg ingen fast deadline). Passerad tid idag → imorgon samma tid. Fältet rensas automatiskt vid kabelurkoppling. **Deadline Override-switchen (Feature 1) tas bort.**
