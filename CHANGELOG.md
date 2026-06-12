@@ -16,7 +16,7 @@
 | `switch.py` | Borttagen `DeadlineOverrideSwitch` (klass + registrering + import) |
 | `tests/test_deadline.py` | 11 fristående enhetstester (`python3 tests/test_deadline.py`) |
 
-**Status:** Implementerad och lokalt verifierad (11 deadline-tester PASS, alla moduler kompilerar). **Ännu ej deployad till live-HA** (deploy pausad på användarens begäran). Vid deploy: den gamla `switch.*_deadline_override`-entiteten blir föräldralös i registret och kan raderas manuellt.
+**Status:** Implementerad, lokalt verifierad (11 deadline-tester PASS, alla moduler kompilerar) och **deployad + verifierad på live-HA 2026-06-12**: komponenten laddar utan fel, deadline-logiken körs korrekt (vardag → nästa 06:00), och text-entiteten `text.garage_ev_charger_garocs_48671aa056e80_manual_deadline` är registrerad och aktiv. Den gamla `switch.*_deadline_override`-entiteten ligger kvar föräldralös i registret och kan raderas manuellt via Inställningar → Enheter & tjänster → Entiteter.
 
 ---
 
