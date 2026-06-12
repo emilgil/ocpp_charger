@@ -105,6 +105,7 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.BINARY_SENSOR,
     Platform.SWITCH,
+    Platform.TEXT,        # Feature 4: manual deadline
 ]
 
 
