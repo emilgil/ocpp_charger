@@ -1652,25 +1652,20 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("[ChargePlanner] Multi-vehicle: cable connected, planning for active vehicle %s soc=%.0f%%",
                     self.active_vehicle.get(VEHICLE_NAME, "?"), current_soc)
             else:
-                # No cable – pick vehicle with lowest SoC to show upcoming charging need
-                best_vehicle = None
-                lowest_soc = float("inf")
-                for v in self._vehicles:
-                    soc_ent = v.get(VEHICLE_SOC_ENTITY, "")
+                # No cable – plan for the selected active vehicle (Bug 25)
+                vehicle = self.active_vehicle or (self._vehicles[0] if self._vehicles else None)
+                if vehicle:
+                    soc_ent = vehicle.get(VEHICLE_SOC_ENTITY, "")
                     soc_st = self.hass.states.get(soc_ent) if soc_ent else None
                     try:
-                        v_soc = float(soc_st.state) if soc_st else float("inf")
+                        v_soc = float(soc_st.state) if soc_st else None
                     except (ValueError, TypeError):
-                        v_soc = float("inf")
-                    if v_soc < lowest_soc:
-                        lowest_soc = v_soc
-                        best_vehicle = v
-                if best_vehicle:
-                    current_soc = lowest_soc if lowest_soc != float("inf") else 0.0
+                        v_soc = None
+                    current_soc = v_soc if v_soc is not None else 0.0
                     target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
-                    battery_capacity = float(best_vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
-                    _LOGGER.debug("[ChargePlanner] Multi-vehicle: no cable, planning for %s soc=%.0f%%",
-                        best_vehicle.get(VEHICLE_NAME, "?"), current_soc)
+                    battery_capacity = float(vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
+                    _LOGGER.debug("[ChargePlanner] Multi-vehicle: no cable, planning for active vehicle %s soc=%.0f%%",
+                        vehicle.get(VEHICLE_NAME, "?"), current_soc)
                 else:
                     current_soc = self.ocpp.state.soc_percent or 0.0
                     target_soc = float(self.target_soc) if self.target_soc > 0 else 80.0
