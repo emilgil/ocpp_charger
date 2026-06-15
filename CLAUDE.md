@@ -259,7 +259,10 @@ tidsblock (slots) med planerad energi/pris per slot samt post-hoc faktisk energi
   för avklarade slots (snapshot vid slotstart, delta vid slotslut).
 
 **Koordinator-wrappers** (`__init__.py`): `_rebuild_charge_windows()` och `_update_charge_windows_actual()`
-anropas i `_async_update_data()` efter `_update_charge_plan()`. Rebuild körs bara när `charge_plan`
+anropas i `_async_update_data()` efter `_update_charge_plan()`. `_rebuild_charge_windows()` anropas
+dessutom **inuti** `_update_charge_plan()` (efter `_alt_plan` samt före natt-switch-returen) så att
+sensorn synkas direkt vid direkta setter-anrop (algoritmbyte, target_soc m.m.) utan att vänta på
+polling-cykeln (Bug 24). Rebuild körs bara när `charge_plan`
 är ett nytt objekt (identitetsguard `_charge_windows_plan_ref`) så att `calculated_at` speglar verklig
 omräkning, inte varje 10s-cykel. Energikälla: `_cable_session_energy_kwh` (+ aktiv tx-energi).
 Snapshots i `_charge_windows_energy_at_slot_start` nycklas på slot-start-ISO.
