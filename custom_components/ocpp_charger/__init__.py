@@ -1328,6 +1328,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
     def set_allow_day_charging(self, value: bool) -> None:
         """Set day charging flag and mark as manually overridden for this session."""
+        _LOGGER.debug(
+            "[DayCharging] set_allow_day_charging(%s) (was %s, manuell override aktiveras)",
+            value, self.allow_day_charging,
+        )
         self.allow_day_charging = value
         self._day_charging_manual_override = True
         self._last_plan_update = None  # Bug 5: bypass throttle
@@ -1372,7 +1376,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """Return the charging deadline (Feature 4).
 
         Delegates to deadline.compute_deadline: a manual HH:MM value wins;
-        otherwise weekday → 06:00, weekend → end of available price data.
+        otherwise allow_day_charging / weekend → end of available price data,
+        weekday → 06:00 (Bug 27).
         """
         return compute_deadline(
             now_local,
@@ -1380,6 +1385,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             all_prices,
             manual_deadline_str=self.manual_deadline_str,
             deadline_hour=DEFAULT_CHARGE_DEADLINE_HOUR,
+            allow_day_charging=self.allow_day_charging,
         )
 
     def _someone_home(self) -> bool:

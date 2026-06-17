@@ -275,11 +275,12 @@ Text-entiteten `text.ocpp_manual_deadline` ersätter den gamla **Deadline Overri
 borttagen). Användaren skriver in ett klockslag `HH:MM` som laddningsdeadline; tomt fält → automatiskt
 beteende (vardag 06:00, helg ingen fast deadline). Om tiden redan passerat idag → imorgon samma tid.
 
-**Ren logik i `deadline.py`** (stdlib-only, testbar fristående; `tests/test_deadline.py`, 11 tester):
+**Ren logik i `deadline.py`** (stdlib-only, testbar fristående; `tests/test_deadline.py`, 15 tester):
 - `parse_hhmm(value)` – `"H:MM"`/`"HH:MM"` → `(hour, minute)` med intervallkoll (0–23, 0–59), annars `None`.
-- `compute_deadline(now_local, local_tz, all_prices, manual_deadline_str, deadline_hour)` – prioritet
-  manuell → vardag 06:00 → helg sista prisintervall +15 min → fallback 48h. `_compute_deadline()` i
-  `__init__.py` är en tunn wrapper; `text.py` återanvänder `parse_hhmm` för validering.
+- `compute_deadline(now_local, local_tz, all_prices, manual_deadline_str, deadline_hour, allow_day_charging)` –
+  prioritet manuell → `allow_day_charging`/helg sista prisintervall +15 min (annars fallback 48h) → vardag
+  06:00 (Bug 27). `_compute_deadline()` i `__init__.py` är en tunn wrapper som skickar med
+  `self.allow_day_charging`; `text.py` återanvänder `parse_hhmm` för validering.
 
 **Persistens (bakgrundsbug):** `manual_deadline_str` sparas/läses via Store (`_save_state`/`_load_state`,
 nyckel `"manual_deadline"`) eftersom det gamla in-memory-värdet nollställdes av konkurrerande

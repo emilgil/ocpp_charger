@@ -1,5 +1,23 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-17: Bug 27 – `allow_day_charging=True` ignorerades av deadline-beräkningen
+
+**Problem:** `_compute_deadline()` skickade inte med `allow_day_charging` till `compute_deadline()` i `deadline.py`. På vardagar returnerade `compute_deadline()` därför alltid `DEFAULT_CHARGE_DEADLINE_HOUR` (06:00), oavsett switch-läge. Billiga dagtidsslots imorgon (t.ex. 10:00–15:00) filtrerades bort i `plan_cheapest_window()` eftersom de låg efter 06:00 – switchen "Allow Day Charging" hade ingen effekt på planeringshorisonten.
+
+**Fix:** `compute_deadline()` tar nu en `allow_day_charging`-parameter. Prioritet: manuell HH:MM → `allow_day_charging`/helg = slutet av prisdata (+15 min, annars now+48h) → vardag 06:00. `_compute_deadline()` i `__init__.py` skickar med `self.allow_day_charging`. Helg-logiken och `allow_day_charging`-logiken är nu sammanslagna i ett gemensamt villkor.
+
+| Fil | Ändring |
+|-----|---------|
+| `deadline.py` | `compute_deadline()` får parameter `allow_day_charging` (helg-/dag-logik sammanslagen) |
+| `__init__.py` | `_compute_deadline()` skickar `allow_day_charging=self.allow_day_charging` |
+| `tests/test_deadline.py` | 4 nya tester (vardag+allow → prishorisont, no-prices→48h, manuell vinner, allow=False→06:00) |
+
+**Verifiering:** 15/15 deadline-tester gröna (TDD: 4 nya tester rödde först, gröna efter fix). Deployad live: med `allow_day_charging=True` extenderas deadline till slutet av prisdata och planeraren valde en **dagtidsplan** `11:45–15:15 @ 26.0 öre/kWh` istället för nattplanen `72.6 öre/kWh` – exakt avsett beteende.
+
+**Undersökt under verifieringen (ingen bugg):** Deadline syntes pendla True↔False under uppstartsfönstret. Spårning visade att det var **användaren som växlade switchen** av/på under testet, inte en intern instabilitet: `allow_day_charging` gick True→False medan `day_charging_manual_override` förblev `True` (syns i `.storage/`), och enda kodvägen som gör det är `set_allow_day_charging(False)` via `switch.async_turn_off` (notis-actions loggar "User chose" – saknas; ingen automation rör entiteten). Steady state är stabilt och konsekvent (switch av → `allow=False` → deadline 06:00). **Åtgärdat:** en debug-rad lades till i `set_allow_day_charging()` (`[DayCharging] set_allow_day_charging(<value>) (was <old>...)`) så att switch-växlingar nu syns i `ocpp_charger_debug.log` – tidigare var de osynliga.
+
+---
+
 ## 2026-06-17: Bug 26 – Manuellt val av dagladdning persisterades inte vid omstart
 
 **Problem:** När användaren slog på "Tillåt dagladdning" (`set_allow_day_charging(True)` sätter `allow_day_charging=True` + `_day_charging_manual_override=True`) förlorades valet vid varje HA-omstart/omladdning. Varken `allow_day_charging` eller `_day_charging_manual_override` sparades i `_save_state()`/`_load_state()`, så efter omstart initialiserades `_day_charging_manual_override=False` och `_sync_allow_day_charging()` skrev tillbaka det vardagsberäknade `allow_day_charging=False` varje koordinatorcykel. Symptom i loggen: `[ChargePlanner] Day-charging offer skipped: ...` (grenen `elif not self.allow_day_charging`) gång på gång trots att switchen slagits på.

@@ -103,6 +103,53 @@ def test_weekend_no_prices_fallback_48h():
     assert d == now + timedelta(hours=48)
 
 
+# ── compute_deadline: allow_day_charging (Bug 27) ─────────────────────────
+def test_weekday_allow_day_charging_uses_price_horizon():
+    # Weekday + allow_day_charging=True → deadline extends to end of price data
+    # (same as weekend), so the planner can reach tomorrow's cheap daytime slots.
+    now = at(MON, 4, 0)
+    last = datetime(2026, 6, 16, 23, 45, tzinfo=UTC)   # Tuesday last slot
+    prices = [
+        {"time": datetime(2026, 6, 16, 10, 0, tzinfo=UTC)},  # cheap daytime slot
+        {"time": last},
+        {"time": at(MON, 5, 0)},
+    ]
+    d = deadline.compute_deadline(
+        now, UTC, prices, manual_deadline_str="", allow_day_charging=True,
+    )
+    assert d == last + timedelta(minutes=15)
+
+
+def test_weekday_allow_day_charging_no_prices_fallback_48h():
+    now = at(MON, 4, 0)
+    d = deadline.compute_deadline(
+        now, UTC, [], manual_deadline_str="", allow_day_charging=True,
+    )
+    assert d == now + timedelta(hours=48)
+
+
+def test_manual_deadline_wins_over_allow_day_charging():
+    # Manual HH:MM has highest priority, even with allow_day_charging=True.
+    now = at(MON, 5, 0)
+    last = datetime(2026, 6, 16, 23, 45, tzinfo=UTC)
+    prices = [{"time": last}]
+    d = deadline.compute_deadline(
+        now, UTC, prices, manual_deadline_str="08:15", allow_day_charging=True,
+    )
+    assert d == at(MON, 8, 15)
+
+
+def test_weekday_allow_day_charging_false_still_six():
+    # Regression: default (allow_day_charging=False) keeps weekday 06:00 deadline
+    # even when later price data exists.
+    now = at(MON, 4, 0)
+    prices = [{"time": datetime(2026, 6, 16, 23, 45, tzinfo=UTC)}]
+    d = deadline.compute_deadline(
+        now, UTC, prices, manual_deadline_str="", allow_day_charging=False,
+    )
+    assert d == at(MON, 6, 0)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
