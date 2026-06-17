@@ -1,5 +1,23 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-17: Bug 26 – Manuellt val av dagladdning persisterades inte vid omstart
+
+**Problem:** När användaren slog på "Tillåt dagladdning" (`set_allow_day_charging(True)` sätter `allow_day_charging=True` + `_day_charging_manual_override=True`) förlorades valet vid varje HA-omstart/omladdning. Varken `allow_day_charging` eller `_day_charging_manual_override` sparades i `_save_state()`/`_load_state()`, så efter omstart initialiserades `_day_charging_manual_override=False` och `_sync_allow_day_charging()` skrev tillbaka det vardagsberäknade `allow_day_charging=False` varje koordinatorcykel. Symptom i loggen: `[ChargePlanner] Day-charging offer skipped: ...` (grenen `elif not self.allow_day_charging`) gång på gång trots att switchen slagits på.
+
+**Fix:** `_save_state()` persisterar nu `allow_day_charging` + `day_charging_manual_override`. `_load_state()` återställer dem **endast** när `day_charging_manual_override` var satt – annars lämnas overriden av så att `_sync_allow_day_charging()` fortsätter följa vardag/helg-autoschemat. Samma Store-mekanism som redan bevisat fungerar för `charge_mode`/`active_vehicle_name` (läses i samma block, t+10s efter start, före första klobbrande spar-cykeln).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_save_state()` + `_load_state()` persisterar/återställer `allow_day_charging` och `_day_charging_manual_override` |
+
+**Avviker från bug26.md:** Rapportens `deadline_override`-del är **inte** implementerad – den entiteten/variabeln togs bort av Feature 4 (Deadline Override-switch → text-entitet). Att lägga `self.deadline_override` i `_save_state()` enligt rapporten hade kraschat med `AttributeError`. (Den döda konstanten `SWITCH_DEADLINE_OVERRIDE` i `const.py` kvarstår – separat städning.)
+
+**Beteendekonsekvens:** Eftersom `_day_charging_manual_override` aldrig nollställs (förutom genom nytt manuellt val) innebär persistensen att vardag/helg-autoschemat permanent är overridat efter första switch-tryckningen, tills användaren själv ändrar switchen igen. Detta matchar bug26.md:s avsikt: "manuellt val ... bör överleva ... tills användaren aktivt ändrar det."
+
+**Verifiering:** kompilerar, befintliga enhetstester gröna (25/25), deployad till live HA + omstart utan fel/traceback, spar-sidan bekräftad (`allow_day_charging` + `day_charging_manual_override` i `.storage/`). Load-sidan verifierad via strukturell ekvivalens med fungerande restores; `[Store] Återställde allow_day_charging=...` loggas vid nästa riktiga switch-tryck + omstart.
+
+---
+
 ## 2026-06-15: Bug 25 – Utan kabel planerades för bilen med lägst SOC istället för active_vehicle
 
 **Problem:** När ingen kabel var inkopplad beräknade `_update_charge_plan()` laddplanen (och dashboardens grafer/savings-sensor) för fordonet med **lägst SOC** – oavsett vad användaren valt i `select.*_active_vehicle`. No-cable-grenen itererade alltid över alla fordon och valde lägst SOC, vilket ignorerade `self.active_vehicle`. Dessutom var grenen internt inkonsekvent: `energy_needed` dimensionerades för lägst-SOC-bilen medan `power_kw` (strömtaket på rad 1706) redan använde `active_vehicle`.

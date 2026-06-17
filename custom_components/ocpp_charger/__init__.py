@@ -528,6 +528,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "target_soc": self.target_soc,
             "target_kwh": self.target_kwh,
             "active_vehicle_name": self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None,
+            "allow_day_charging": self.allow_day_charging,
+            "day_charging_manual_override": self._day_charging_manual_override,
         }
         if state and state.session_start:
             data["session_start"] = state.session_start.isoformat()
@@ -563,6 +565,17 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 self.target_soc = float(data["target_soc"])
             if data.get("target_kwh") is not None:
                 self.target_kwh = float(data["target_kwh"])
+            # Bug 26: restore the manual day-charging override so it survives restart.
+            # Only restore when the user actually toggled it; otherwise leave
+            # _day_charging_manual_override=False so _sync_allow_day_charging() keeps
+            # following the weekday/weekend auto-schedule.
+            if data.get("day_charging_manual_override"):
+                self._day_charging_manual_override = True
+                self.allow_day_charging = bool(data.get("allow_day_charging", False))
+                _LOGGER.info(
+                    "[Store] Återställde allow_day_charging=%s (manuell override)",
+                    self.allow_day_charging,
+                )
             saved_vehicle = data.get("active_vehicle_name")
             if saved_vehicle:
                 match = next((v for v in self._vehicles if v.get(VEHICLE_NAME) == saved_vehicle), None)
