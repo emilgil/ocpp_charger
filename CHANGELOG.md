@@ -1,5 +1,57 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-18: Bug 28 – Omräknad plan avbröt pågående laddning utan att återuppta
+
+**Problem:** När morgondagens priser anlände (~13:00) mitt under en aktiv session räknades planen om (avsiktligt, sedan Bug 16). Om de nya fönstren flyttades bort från nuvarande tidpunkt såg nästa `_update_smart_charging()` `in_window=False`, körde `_guarded_remote_stop()` och **avbröt pågående laddning** – som inte återupptogs förrän nästa fönster (t.ex. 22:00). Window-stopp-grenen dömde alltså en redan pågående session mot den *omräknade* planen.
+
+**Fix:** Planens fönster fryses vid sessionstart i `_session_plan_intervals` (auto-start + manuell/Immediate start). Window-stopp-grenen bedömer en aktiv session mot den frysta listan istället för `plan.is_in_window()`. Listan nollställs endast vid kabelurkoppling (`Available`) – **inte** vid `Preparing` eller Garo 15-min-reset – så greedy-pauser inom samma kabelsession överlever och styr återupptagning. Mål-nått- och SuspendedEV-grenarna ligger ovanför och kan fortfarande stoppa.
+
+**Designbeslut:** `allow_day_charging` (och dess automatiska `_sync_allow_day_charging()`-flip på veckoschema) avbryter medvetet **inte** en aktiv session – den frysta planen vinner. `allow_day_charging` är ett planeringsfilter för framtida fönster, inte ett "stoppa nu"-kommando; den vägen är stopp-knappen (`async_stop_charging`).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | Ny `_session_plan_intervals`; frys vid auto-start + manuell start; window-stopp använder frysta listan; nollställ vid `Available`; debug-rad när frysta planen avvärjer ett stopp |
+
+**Verifiering:** kompilerar, befintliga enhetstester gröna (frysta jämförelsen matchar `is_in_window`-semantiken `iv_start <= t <= iv_end`). Deployad live + omstart utan fel/traceback; inga spuriösa `Outside plan window`-stopp; mål-nått/manual-override-grenarna oförändrade (sågs fira korrekt). Beteendebevis (mid-charge prisuppdatering → ingen abort) loggas av `[SmartCharge] Bug28: behåller aktiv session i fryst planfönster ...` när scenariot inträffar.
+
+---
+
+## 2026-06-17: Bug 27 – `allow_day_charging=True` ignorerades av deadline-beräkningen
+
+**Problem:** `_compute_deadline()` skickade inte med `allow_day_charging` till `compute_deadline()` i `deadline.py`. På vardagar returnerade `compute_deadline()` därför alltid `DEFAULT_CHARGE_DEADLINE_HOUR` (06:00), oavsett switch-läge. Billiga dagtidsslots imorgon (t.ex. 10:00–15:00) filtrerades bort i `plan_cheapest_window()` eftersom de låg efter 06:00 – switchen "Allow Day Charging" hade ingen effekt på planeringshorisonten.
+
+**Fix:** `compute_deadline()` tar nu en `allow_day_charging`-parameter. Prioritet: manuell HH:MM → `allow_day_charging`/helg = slutet av prisdata (+15 min, annars now+48h) → vardag 06:00. `_compute_deadline()` i `__init__.py` skickar med `self.allow_day_charging`. Helg-logiken och `allow_day_charging`-logiken är nu sammanslagna i ett gemensamt villkor.
+
+| Fil | Ändring |
+|-----|---------|
+| `deadline.py` | `compute_deadline()` får parameter `allow_day_charging` (helg-/dag-logik sammanslagen) |
+| `__init__.py` | `_compute_deadline()` skickar `allow_day_charging=self.allow_day_charging` |
+| `tests/test_deadline.py` | 4 nya tester (vardag+allow → prishorisont, no-prices→48h, manuell vinner, allow=False→06:00) |
+
+**Verifiering:** 15/15 deadline-tester gröna (TDD: 4 nya tester rödde först, gröna efter fix). Deployad live: med `allow_day_charging=True` extenderas deadline till slutet av prisdata och planeraren valde en **dagtidsplan** `11:45–15:15 @ 26.0 öre/kWh` istället för nattplanen `72.6 öre/kWh` – exakt avsett beteende.
+
+**Undersökt under verifieringen (ingen bugg):** Deadline syntes pendla True↔False under uppstartsfönstret. Spårning visade att det var **användaren som växlade switchen** av/på under testet, inte en intern instabilitet: `allow_day_charging` gick True→False medan `day_charging_manual_override` förblev `True` (syns i `.storage/`), och enda kodvägen som gör det är `set_allow_day_charging(False)` via `switch.async_turn_off` (notis-actions loggar "User chose" – saknas; ingen automation rör entiteten). Steady state är stabilt och konsekvent (switch av → `allow=False` → deadline 06:00). **Åtgärdat:** en debug-rad lades till i `set_allow_day_charging()` (`[DayCharging] set_allow_day_charging(<value>) (was <old>...)`) så att switch-växlingar nu syns i `ocpp_charger_debug.log` – tidigare var de osynliga.
+
+---
+
+## 2026-06-17: Bug 26 – Manuellt val av dagladdning persisterades inte vid omstart
+
+**Problem:** När användaren slog på "Tillåt dagladdning" (`set_allow_day_charging(True)` sätter `allow_day_charging=True` + `_day_charging_manual_override=True`) förlorades valet vid varje HA-omstart/omladdning. Varken `allow_day_charging` eller `_day_charging_manual_override` sparades i `_save_state()`/`_load_state()`, så efter omstart initialiserades `_day_charging_manual_override=False` och `_sync_allow_day_charging()` skrev tillbaka det vardagsberäknade `allow_day_charging=False` varje koordinatorcykel. Symptom i loggen: `[ChargePlanner] Day-charging offer skipped: ...` (grenen `elif not self.allow_day_charging`) gång på gång trots att switchen slagits på.
+
+**Fix:** `_save_state()` persisterar nu `allow_day_charging` + `day_charging_manual_override`. `_load_state()` återställer dem **endast** när `day_charging_manual_override` var satt – annars lämnas overriden av så att `_sync_allow_day_charging()` fortsätter följa vardag/helg-autoschemat. Samma Store-mekanism som redan bevisat fungerar för `charge_mode`/`active_vehicle_name` (läses i samma block, t+10s efter start, före första klobbrande spar-cykeln).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_save_state()` + `_load_state()` persisterar/återställer `allow_day_charging` och `_day_charging_manual_override` |
+
+**Avviker från bug26.md:** Rapportens `deadline_override`-del är **inte** implementerad – den entiteten/variabeln togs bort av Feature 4 (Deadline Override-switch → text-entitet). Att lägga `self.deadline_override` i `_save_state()` enligt rapporten hade kraschat med `AttributeError`. (Den döda konstanten `SWITCH_DEADLINE_OVERRIDE` i `const.py` kvarstår – separat städning.)
+
+**Beteendekonsekvens:** Eftersom `_day_charging_manual_override` aldrig nollställs (förutom genom nytt manuellt val) innebär persistensen att vardag/helg-autoschemat permanent är overridat efter första switch-tryckningen, tills användaren själv ändrar switchen igen. Detta matchar bug26.md:s avsikt: "manuellt val ... bör överleva ... tills användaren aktivt ändrar det."
+
+**Verifiering:** kompilerar, befintliga enhetstester gröna (25/25), deployad till live HA + omstart utan fel/traceback, spar-sidan bekräftad (`allow_day_charging` + `day_charging_manual_override` i `.storage/`). Load-sidan verifierad via strukturell ekvivalens med fungerande restores; `[Store] Återställde allow_day_charging=...` loggas vid nästa riktiga switch-tryck + omstart.
+
+---
+
 ## 2026-06-15: Bug 25 – Utan kabel planerades för bilen med lägst SOC istället för active_vehicle
 
 **Problem:** När ingen kabel var inkopplad beräknade `_update_charge_plan()` laddplanen (och dashboardens grafer/savings-sensor) för fordonet med **lägst SOC** – oavsett vad användaren valt i `select.*_active_vehicle`. No-cable-grenen itererade alltid över alla fordon och valde lägst SOC, vilket ignorerade `self.active_vehicle`. Dessutom var grenen internt inkonsekvent: `energy_needed` dimensionerades för lägst-SOC-bilen medan `power_kw` (strömtaket på rad 1706) redan använde `active_vehicle`.

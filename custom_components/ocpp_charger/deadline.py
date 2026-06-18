@@ -35,13 +35,16 @@ def compute_deadline(
     all_prices: list,
     manual_deadline_str: str = "",
     deadline_hour: int = 6,
+    allow_day_charging: bool = False,
 ) -> datetime:
     """Return the charging deadline.
 
     Priority:
     1. Manual HH:MM (manual_deadline_str) – rolls to tomorrow if already past.
-    2. Weekday → deadline_hour:00 (rolls to tomorrow if past).
-    3. Weekend → end of last available price interval (+15 min), else now + 48h.
+    2. allow_day_charging=True → end of last available price interval (+15 min),
+       else now + 48h. Same logic as weekend – planner can use full price horizon.
+    3. Weekday → deadline_hour:00 (rolls to tomorrow if past).
+    4. Weekend → end of last available price interval (+15 min), else now + 48h.
     """
     parsed = parse_hhmm(manual_deadline_str)
     if parsed is not None:
@@ -54,17 +57,17 @@ def compute_deadline(
         return candidate
 
     is_weekend = now_local.weekday() >= 5  # Sat=5, Sun=6
-    if not is_weekend:
-        today_deadline = datetime.combine(
-            now_local.date(), dtime(deadline_hour, 0), tzinfo=local_tz,
-        )
-        if today_deadline > now_local:
-            return today_deadline
-        return datetime.combine(
-            now_local.date() + timedelta(days=1), dtime(deadline_hour, 0), tzinfo=local_tz,
-        )
+    if allow_day_charging or is_weekend:
+        if all_prices:
+            last_time = max(_to_utc(iv["time"]) for iv in all_prices)
+            return (last_time + timedelta(minutes=15)).astimezone(local_tz)
+        return now_local + timedelta(hours=48)
 
-    if all_prices:
-        last_time = max(_to_utc(iv["time"]) for iv in all_prices)
-        return (last_time + timedelta(minutes=15)).astimezone(local_tz)
-    return now_local + timedelta(hours=48)
+    today_deadline = datetime.combine(
+        now_local.date(), dtime(deadline_hour, 0), tzinfo=local_tz,
+    )
+    if today_deadline > now_local:
+        return today_deadline
+    return datetime.combine(
+        now_local.date() + timedelta(days=1), dtime(deadline_hour, 0), tzinfo=local_tz,
+    )
