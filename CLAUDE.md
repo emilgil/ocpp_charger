@@ -88,6 +88,9 @@ Ingen stop-logik körs inom 90 sekunder efter `StartTransaction`. Förhindrar at
 ### Symmetrisk mål-nått-koll (Bug 23)
 `_charging_goal_reached() -> (bool, str)` är den gemensamma mål-nått-källan (SOC ≥ target_soc, eller energi ≥ target_kwh, eller energi ≥ plan-energi). Den anropas i **både** stopp-grenen och auto-start-grenen i `_update_smart_charging()`. Innan Bug 23 kollade auto-start bara `plan.is_in_window()`, så när målet nåddes i ett öppet planfönster stoppade stopp-logiken medan auto-start startade om → 0 kWh-pingpong var 5:e minut tills fönstret krympte. Nu avstår auto-start (`Auto-start undertryckt – mål redan nått`) eftersom grenarna delar villkor. OBS: `_update_charge_plan()` har en egen, medvetet annorlunda mål-koll (utan plan-energi-villkoret – cirkulärt) och delar **inte** hjälpmetoden.
 
+### Sessionsplan-frysning (Bug 28)
+`_session_plan_intervals` fryser `plan.active_intervals` vid sessionstart (auto-start + manuell/Immediate). Window-stopp-grenen i `_update_smart_charging()` bedömer en **aktiv** session mot den frysta listan, inte mot `plan.is_in_window()`. Sedan Bug 16 körs `_update_charge_plan()` även mid-charge; utan frysning kunde en omräkning (morgondagens priser ~13:00) flytta fönstren bort från nuvarande tidpunkt → falsk "Outside plan window" → avbruten session som inte återupptas. Listan nollställs **endast** vid `Available` (kabelurkoppling), inte vid `Preparing` eller Garo 15-min-reset, så greedy-pauser inom kabelsessionen överlever. `None` = ingen aktiv frusen session → fallback till `plan.is_in_window()`. Designval: `allow_day_charging`/`_sync_allow_day_charging()` avbryter **inte** aktiv laddning (planeringsfilter, ej stopp-kommando); "stoppa nu" = stopp-knappen.
+
 ## Nyckelkonstanter (const.py)
 ```python
 DEFAULT_CHARGE_DEADLINE_HOUR        = 6      # Laddning klar senast 06:00
@@ -134,6 +137,7 @@ _last_transaction_start: datetime | None  # för 90s grace period
 _last_remote_start: datetime | None       # för 5 min plan-frysning
 _last_remote_stop: datetime | None        # Fix 8: debounce dubbel RemoteStop (15s)
 _manual_start_requested: bool             # manuell override-flagga
+_session_plan_intervals: list[tuple] | None  # Bug 28: frysta planfönster för aktiv session (None = ingen)
 _notified_connect_session: str | None     # dedup-guard anslutning
 _notified_start_session: str | None       # dedup-guard start
 _notified_stop_session: str | None        # dedup-guard stop

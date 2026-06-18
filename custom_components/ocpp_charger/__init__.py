@@ -382,6 +382,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._notify_on_start:   bool = self.config.get(CONF_NOTIFY_ON_START, True)
         self._notify_on_stop:    bool = self.config.get(CONF_NOTIFY_ON_STOP, True)
         self._was_charging: bool = False
+        # Bug 28: plan windows frozen at session start; None = no active frozen session.
+        # An active session is gated by this list, not by a plan recalculated mid-charge.
+        self._session_plan_intervals: list[tuple[datetime, datetime]] | None = None
         self._preparing_timestamp: datetime | None = None  # for Finishing-after-Preparing guard
         self._last_connect_notify_time: datetime | None = None  # debounce duplicate Preparing
         self._last_transaction_start: datetime | None = None  # for grace period after start
@@ -918,6 +921,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
             _LOGGER.info("[SmartCharge] Plan window active (%s–%s), starting charge",
                 plan.start.astimezone().strftime("%H:%M"), plan.end.astimezone().strftime("%H:%M"))
             self._last_remote_start = now_utc
+            # Bug 28: freeze the plan windows for this session so a later
+            # recalculation (new prices mid-charge) can't shift the window
+            # out from under the active session.
+            self._session_plan_intervals = list(plan.active_intervals)
             self._manual_start_requested = False   # auto-start takes over control
             self._manual_stop_requested = False    # next connect should notify normally
             # Set the correct current limit BEFORE starting so the charger
@@ -964,7 +971,21 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     self._guarded_remote_stop(now_utc)
                 return
 
-            in_window = plan.is_in_window(now_utc)
+            # Bug 28: an active session is gated by the plan frozen at its start,
+            # not by a plan that may have been recalculated mid-session.
+            if self.ocpp.state.charging and self._session_plan_intervals is not None:
+                in_window = any(
+                    iv_start <= now_utc <= iv_end
+                    for iv_start, iv_end in self._session_plan_intervals
+                )
+                # Bug 28: log when the frozen plan averts a stop the recalculated plan would cause
+                if in_window and not plan.is_in_window(now_utc):
+                    _LOGGER.debug(
+                        "[SmartCharge] Bug28: behåller aktiv session i fryst planfönster "
+                        "trots att omräknad plan ligger utanför fönster"
+                    )
+            else:
+                in_window = plan.is_in_window(now_utc)
             if not in_window and self.ocpp.state.charging:
                 if self._manual_start_requested:
                     _LOGGER.info("[SmartCharge] Manual override aktiv, stoppar inte")
@@ -1238,6 +1259,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self.current_limit_a = new_limit
         await self.ocpp.set_charging_limit(new_limit)
         self._manual_start_requested = True
+        # Bug 28: freeze current plan windows for this manually-started session.
+        if self.charge_plan and self.charge_plan.active_intervals:
+            self._session_plan_intervals = list(self.charge_plan.active_intervals)
         await self.ocpp.remote_start_transaction()
         await self.async_refresh()
 
@@ -1414,6 +1438,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         # ── Reset _was_charging when cable is disconnected ───────────────
         if status == "Available":
             self._was_charging = False
+            self._session_plan_intervals = None  # Bug 28: clear frozen plan on cable disconnect
             self._session_total_kwh = 0.0  # Fix 7: reset accumulated energy
             self._cable_session_notified_connect = False  # Fix 9: reset connect-notif flag
             self._cable_connect_time = None  # Fix 4: reset SOC reread

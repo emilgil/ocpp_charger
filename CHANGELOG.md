@@ -1,5 +1,21 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-18: Bug 28 – Omräknad plan avbröt pågående laddning utan att återuppta
+
+**Problem:** När morgondagens priser anlände (~13:00) mitt under en aktiv session räknades planen om (avsiktligt, sedan Bug 16). Om de nya fönstren flyttades bort från nuvarande tidpunkt såg nästa `_update_smart_charging()` `in_window=False`, körde `_guarded_remote_stop()` och **avbröt pågående laddning** – som inte återupptogs förrän nästa fönster (t.ex. 22:00). Window-stopp-grenen dömde alltså en redan pågående session mot den *omräknade* planen.
+
+**Fix:** Planens fönster fryses vid sessionstart i `_session_plan_intervals` (auto-start + manuell/Immediate start). Window-stopp-grenen bedömer en aktiv session mot den frysta listan istället för `plan.is_in_window()`. Listan nollställs endast vid kabelurkoppling (`Available`) – **inte** vid `Preparing` eller Garo 15-min-reset – så greedy-pauser inom samma kabelsession överlever och styr återupptagning. Mål-nått- och SuspendedEV-grenarna ligger ovanför och kan fortfarande stoppa.
+
+**Designbeslut:** `allow_day_charging` (och dess automatiska `_sync_allow_day_charging()`-flip på veckoschema) avbryter medvetet **inte** en aktiv session – den frysta planen vinner. `allow_day_charging` är ett planeringsfilter för framtida fönster, inte ett "stoppa nu"-kommando; den vägen är stopp-knappen (`async_stop_charging`).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | Ny `_session_plan_intervals`; frys vid auto-start + manuell start; window-stopp använder frysta listan; nollställ vid `Available`; debug-rad när frysta planen avvärjer ett stopp |
+
+**Verifiering:** kompilerar, befintliga enhetstester gröna (frysta jämförelsen matchar `is_in_window`-semantiken `iv_start <= t <= iv_end`). Deployad live + omstart utan fel/traceback; inga spuriösa `Outside plan window`-stopp; mål-nått/manual-override-grenarna oförändrade (sågs fira korrekt). Beteendebevis (mid-charge prisuppdatering → ingen abort) loggas av `[SmartCharge] Bug28: behåller aktiv session i fryst planfönster ...` när scenariot inträffar.
+
+---
+
 ## 2026-06-17: Bug 27 – `allow_day_charging=True` ignorerades av deadline-beräkningen
 
 **Problem:** `_compute_deadline()` skickade inte med `allow_day_charging` till `compute_deadline()` i `deadline.py`. På vardagar returnerade `compute_deadline()` därför alltid `DEFAULT_CHARGE_DEADLINE_HOUR` (06:00), oavsett switch-läge. Billiga dagtidsslots imorgon (t.ex. 10:00–15:00) filtrerades bort i `plan_cheapest_window()` eftersom de låg efter 06:00 – switchen "Allow Day Charging" hade ingen effekt på planeringshorisonten.
