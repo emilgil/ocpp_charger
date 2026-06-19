@@ -93,6 +93,7 @@ from .rest_client import ChargerRestClient
 from .charge_planner import ChargePlan, plan_cheapest_window, _to_utc
 from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline
+from .soc_estimate import estimate_soc
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
 
@@ -821,10 +822,20 @@ class OCPPCoordinator(DataUpdateCoordinator):
     def _charging_goal_reached(self) -> tuple[bool, str]:
         """Return (reached, reason) when the charging goal is met.
 
-        The goal counts as reached when any of these hold:
-          • SOC has reached the configured target_soc
+        The goal counts as reached when either of these hold:
+          • (estimated) SOC has reached the configured target_soc
           • delivered energy has reached the user target_kwh
-          • delivered energy has reached the plan's planned energy
+
+        SOC uses the same estimate as the planner (Bug 8) so vehicles whose SOC
+        entity doesn't refresh during charging (Kia/Skoda) stop at the real target,
+        not the stale reported value.
+
+        Bug 29: the old "delivered energy >= plan.energy_kwh" condition was dropped.
+        Since the plan recomputes mid-charge (Bug 16) from an estimated SOC that
+        itself includes the delivered energy, plan.energy_kwh is *remaining* energy
+        (≈ TOTAL − delivered). Comparing delivered against it tripped at delivered ≈
+        TOTAL/2 → charging stopped at the SOC midpoint. Estimated-SOC ≥ target is the
+        correct, non-circular completion criterion.
 
         Used in two places so auto-start and auto-stop stay symmetric: the stop
         branch ends an active session, and the auto-start branch suppresses a
@@ -833,14 +844,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
         open (Bug 23).
         """
         state = self.ocpp.state
-        plan = self.charge_plan
-        soc = state.soc_percent
+        active_tx_energy = state.energy_kwh if state.transaction_id is not None else 0.0
+        already_charged_kwh = self._session_total_kwh + active_tx_energy
+        soc = estimate_soc(
+            self._session_start_soc,
+            already_charged_kwh,
+            self.battery_capacity_kwh,
+            DEFAULT_CHARGE_EFFICIENCY,
+            state.soc_percent,
+        )
         if soc is not None and self.target_soc > 0 and soc >= self.target_soc:
             return True, f"SOC {soc:.0f}% >= mål {self.target_soc:.0f}%"
         if self.target_kwh > 0 and state.energy_kwh >= self.target_kwh:
             return True, f"Energi {state.energy_kwh:.2f} kWh >= mål {self.target_kwh:.2f} kWh"
-        if plan and plan.energy_kwh > 0 and state.energy_kwh >= plan.energy_kwh:
-            return True, f"Energi {state.energy_kwh:.2f} kWh >= planens {plan.energy_kwh:.2f} kWh"
         return False, ""
 
     def _update_smart_charging(self) -> None:
@@ -1727,8 +1743,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
         # estimate current SOC from session start SOC + charged energy to avoid
         # underestimating remaining energy needed.
         if self._session_start_soc is not None and already_charged_kwh > 0:
-            estimated_soc = self._session_start_soc + (
-                already_charged_kwh * DEFAULT_CHARGE_EFFICIENCY / battery_capacity * 100.0
+            # Bug 29: shared estimator so the planner and goal check can't drift
+            estimated_soc = estimate_soc(
+                self._session_start_soc, already_charged_kwh, battery_capacity,
+                DEFAULT_CHARGE_EFFICIENCY, current_soc,
             )
             current_soc = min(estimated_soc, target_soc)
             _LOGGER.debug(

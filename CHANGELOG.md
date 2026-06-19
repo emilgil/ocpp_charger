@@ -1,5 +1,23 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-19: Bug 29 – Laddning stoppade vid SOC-mittpunkten (cirkulärt plan-energi-villkor)
+
+**Problem:** Laddning avbröts strax efter 13:00 och återupptogs inte (Kia eNiro, stannade på ~84 %). Bug 28-fixen höll sessionen genom omräkningen, men `_charging_goal_reached()` stoppade istället på plan-energi-villkoret: `Mål nått (Energi 12.27 kWh >= planens 11.38 kWh)`.
+
+**Rotorsak:** `_charging_goal_reached()` jämförde levererad energi mot `plan.energy_kwh`. Sedan Bug 16 räknas planen om mid-charge och sedan Bug 8 uppskattas aktuell SOC från levererad energi → `plan.energy_kwh` är numera *återstående* energi (≈ TOTAL − levererat). Då blir villkoret `levererat ≥ återstående` = `levererat ≥ TOTAL/2` → stopp vid SOC-mittpunkten (66→100 stannade på 83,6 %). Eftersom samma metod undertrycker auto-start (Bug 23-symmetri) återupptogs aldrig laddningen. CLAUDE.md noterade redan att `_update_charge_plan()` *medvetet* utelämnar samma villkor "(cirkulärt)".
+
+**Fix:** Ny ren stdlib-only-modul `soc_estimate.py` (`estimate_soc()`), använd i **både** `_charging_goal_reached()` och planerarens Bug 8-block (kan inte driva isär). Mål-nått använder nu estimerad SOC ≥ target_soc (rätt, icke-cirkulärt) + target_kwh; det cirkulära plan-energi-villkoret är borttaget.
+
+| Fil | Ändring |
+|-----|---------|
+| `soc_estimate.py` | Ny modul: `estimate_soc(start_soc, already_charged_kwh, capacity_kwh, efficiency, reported_soc)` |
+| `__init__.py` | `_charging_goal_reached()` använder estimerad SOC, tar bort plan-energi-villkoret; planeraren använder samma helper |
+| `tests/test_soc_estimate.py` | 7 nya tester (TDD) |
+
+**Verifiering:** 7/7 nya tester gröna (rödde först); alla suiter gröna. Deployad live + omstart utan fel/traceback; den falska `>= planens`-stoppen förekommer inte längre; auto-start undertrycks inte felaktigt (väntar korrekt på billigt fönster 04:45–06:00). Fullt beteendebevis (laddning förbi mittpunkten till target) sker vid nästa fönster.
+
+---
+
 ## 2026-06-18: Bug 28 – Omräknad plan avbröt pågående laddning utan att återuppta
 
 **Problem:** När morgondagens priser anlände (~13:00) mitt under en aktiv session räknades planen om (avsiktligt, sedan Bug 16). Om de nya fönstren flyttades bort från nuvarande tidpunkt såg nästa `_update_smart_charging()` `in_window=False`, körde `_guarded_remote_stop()` och **avbröt pågående laddning** – som inte återupptogs förrän nästa fönster (t.ex. 22:00). Window-stopp-grenen dömde alltså en redan pågående session mot den *omräknade* planen.
