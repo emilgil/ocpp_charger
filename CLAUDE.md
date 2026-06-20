@@ -223,6 +223,10 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Active Vehicle | Välj aktivt fordon (visas om >1 fordon) |
 | Planning Algorithm | Greedy (cheapest slots) / Contiguous (cheapest block) |
 
+Alla tre ärver `CoordinatorEntity, SelectEntity` (Bug 32) så de push-uppdateras vid
+`coordinator.async_set_updated_data()` oavsett trigger (notis, automation, egen selector) –
+inte bara via egen `async_select_option()`.
+
 ### Knappar (2 st)
 | Button | Beskrivning |
 |--------|-------------|

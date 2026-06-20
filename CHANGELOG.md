@@ -1,5 +1,21 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-20: Bug 32 – Select-entiteter uppdaterades inte vid extern statusändring
+
+**Problem:** När aktivt fordon byttes via en push-notis-knapp (`mobile_app_notification_action` → `set_active_vehicle`) uppdaterades inte `select.*_active_vehicle` i HA förrän nästa polling (~30 s) – backend bytte korrekt men entiteten skrev inte ut nytt state. Direkt val i selectorn fungerade (gick via entitetens egen `async_select_option`). Samma strukturella brist i `ChargeModeSelect` och `PlannerAlgorithmSelect`.
+
+**Rotorsak:** De tre select-klasserna ärvde bara `SelectEntity`, inte `CoordinatorEntity`, så de prenumererade aldrig på koordinatorns pushar – `coordinator.async_set_updated_data()` triggade ingen `async_write_ha_state()` på dem (till skillnad från switcharna, som är `CoordinatorEntity`).
+
+**Fix:** Alla tre select-klasser ärver nu `CoordinatorEntity, SelectEntity` och anropar `super().__init__(coordinator)`. `current_option`/`extra_state_attributes`/`async_select_option` orörda (de läste redan live).
+
+| Fil | Ändring |
+|-----|---------|
+| `select.py` | Import av `CoordinatorEntity`; `ChargeModeSelect`/`ActiveVehicleSelect`/`PlannerAlgorithmSelect` ärver `CoordinatorEntity, SelectEntity` + `super().__init__()` |
+
+**Verifiering:** kompilerar, regressionssuiter gröna, deployad live (bilen idle) utan fel; select-plattformen laddade rent och alla tre entiteter registrerade. End-to-end notis-klick-test kräver telefonen (kunde ej fyra `mobile_app_notification_action` från CC – core-API 401), men fixen är samma `CoordinatorEntity`-mekanism som switcharna redan använder och som push-uppdaterar live.
+
+---
+
 ## 2026-06-20: Bug 31 – Bug 28:s frysta planfönster överlevde inte omstart
 
 **Problem:** En pågående laddning avbröts kl 17:51 strax efter en omstart (deploy av Bug 30) med `[SmartCharge] Outside plan window (5 intervals), stopping`, trots att Garo fortsatte ladda genom omstarten.
