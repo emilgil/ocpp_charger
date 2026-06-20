@@ -527,6 +527,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "total_cost": state.total_cost if state else 0.0,
             "cable_session_energy_kwh": self._cable_session_energy_kwh,
             "cable_session_cost_sek": self._cable_session_cost_sek,
+            "session_start_soc": self._session_start_soc,   # Bug 30: SOC estimation baseline
+            "session_total_kwh": self._session_total_kwh,   # Bug 30: energy paired with that baseline
             "charge_mode": self.charge_mode,
             "manual_deadline": self.manual_deadline_str,
             "target_soc": self.target_soc,
@@ -588,6 +590,21 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     _LOGGER.info("[Store] Återställde aktivt fordon: %s", saved_vehicle)
                 else:
                     _LOGGER.warning("[Store] Sparat fordon '%s' finns inte längre i konfigurationen", saved_vehicle)
+            # Bug 30: restore the SOC estimation baseline + its paired energy LAST, so a
+            # mid-session restart can't desync them. Must come AFTER set_active_vehicle()
+            # above, which resets _session_start_soc/_session_total_kwh. Previously
+            # _session_start_soc was in-memory only: a restart wiped it, it was re-captured
+            # at a post-charge value (e.g. 82%) while energy_kwh persisted (~12.3 kWh) →
+            # the estimate double-counted and stopped charging far too early. Restoring a
+            # non-None value also stops the capture guard in _update_soc_from_ha
+            # (state.charging and _session_start_soc is None) from overwriting it.
+            if data.get("session_start_soc") is not None:
+                self._session_start_soc = data.get("session_start_soc")
+                self._session_total_kwh = data.get("session_total_kwh", 0.0)
+                _LOGGER.info(
+                    "[Store] Återställde session-baslinje: start_soc=%.1f%% total_kwh=%.2f",
+                    self._session_start_soc, self._session_total_kwh,
+                )
             _LOGGER.info("[Store] Laddade state: cable=%s tx=%s cost=%.2f energy=%.3f mode=%s",
                          self.ocpp.state.cable_connected, self.ocpp.state.transaction_id,
                          self.ocpp.state.accumulated_cost, self.ocpp.state.energy_kwh,
