@@ -1,5 +1,21 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-20: Bug 30 – SOC-estimatets baslinje desyncade vid omstart mitt i en session
+
+**Problem:** Laddning stoppade strax efter 04 med bilen på ~83 % (mål 100 %), endast 1,11 kWh levererat 04–06. Loggen: `Mål nått (SOC 100% >= mål 100%), stoppar` + auto-start undertryckt – HA *trodde* att bilen var full.
+
+**Rotorsak:** SOC-estimatet (Bug 29) = `start_soc + levererad energi`, giltigt bara om energin räknas från när `start_soc` mättes. `_session_start_soc` hölls bara i minnet (ej persisterad) medan `energy_kwh` persisterades. Vid omstart **mitt i en session** nollställdes baslinjen och återfångades till det aktuella (mitt-i-session) SOC-värdet (t.ex. 82 %), medan ~12,3 kWh energi överlevde → den energi som *redan* höjt bilen till 82 % räknades igen → estimat ≈ 100 %, verklighet ~83 % → stopp. **Utlösare:** omstarten för att deploya Bug 29 (inte ett fel i Bug 29 självt).
+
+**Fix:** Persistera `session_start_soc` + `session_total_kwh` i Store och återställ dem i `_load_state()` – **efter** `set_active_vehicle()` (som nollställer dem), annars klobbras återställningen. Återställt icke-None värde hindrar även återfångnings-guarden i `_update_soc_from_ha()` från att skriva över det.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_save_state()` persisterar `session_start_soc` + `session_total_kwh`; `_load_state()` återställer dem efter fordons-återställningen |
+
+**Verifiering:** kompilerar, alla suiter gröna. Deployad live; `[Store] Återställde session-baslinje: start_soc=34.0%` loggas efter fordons-återställningen (överlever `set_active_vehicle`), och baslinjen behålls i `.storage`. Vid själva deploy-omstarten (aktiv session) förseedades baslinjen i `.storage` så den pågående laddningen inte avbröts. Framtida omstarter mitt i laddning är nu säkra.
+
+---
+
 ## 2026-06-19: Bug 29 – Laddning stoppade vid SOC-mittpunkten (cirkulärt plan-energi-villkor)
 
 **Problem:** Laddning avbröts strax efter 13:00 och återupptogs inte (Kia eNiro, stannade på ~84 %). Bug 28-fixen höll sessionen genom omräkningen, men `_charging_goal_reached()` stoppade istället på plan-energi-villkoret: `Mål nått (Energi 12.27 kWh >= planens 11.38 kWh)`.

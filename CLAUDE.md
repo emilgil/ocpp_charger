@@ -296,9 +296,15 @@ OBS: den gamla `switch.*_deadline_override`-entiteten blir föräldralös i enti
 radera manuellt via Inställningar → Enheter & tjänster → Entiteter.
 
 ## Persistens (Store)
-`self._store` (HA Storage) sparar `cable_connected`, `transaction_id` och `manual_deadline` (Feature 4) mellan omstarter.
+`self._store` (HA Storage) sparar bl.a. `cable_connected`, `transaction_id`, `energy_kwh`,
+`manual_deadline` (Feature 4), `allow_day_charging`/`day_charging_manual_override` (Bug 26)
+och `session_start_soc`/`session_total_kwh` (Bug 30) mellan omstarter.
 - `_save_state()` anropas i varje `_async_update_data()`-cykel
 - `_load_state()` anropas i `_delayed_soc_refresh()` (10s efter HA-start)
+- **Bug 30:** `session_start_soc`/`session_total_kwh` återställs **efter** `set_active_vehicle()`
+  i `_load_state()` (den nollställer dem). De håller SOC-estimatets baslinje i synk med dess
+  energi över en omstart mitt i en laddning – annars dubbelräknas redan levererad energi och
+  laddningen stoppar för tidigt ("Mål nått" vid fel SOC).
 
 ## Loggning
 - Roterande debug-fil: `/config/ocpp_charger_debug.log` (5 MB × 3 filer)
