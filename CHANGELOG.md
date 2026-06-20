@@ -1,5 +1,21 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-20: Bug 31 – Bug 28:s frysta planfönster överlevde inte omstart
+
+**Problem:** En pågående laddning avbröts kl 17:51 strax efter en omstart (deploy av Bug 30) med `[SmartCharge] Outside plan window (5 intervals), stopping`, trots att Garo fortsatte ladda genom omstarten.
+
+**Rotorsak:** `_session_plan_intervals` (Bug 28:s frysta planfönster) hölls bara i minnet och nollställdes vid omstart. Bilen laddade utanför det omräknade planfönstret (live-planen hade flyttat till 22:30–00:00); utan den frysta listan föll window-check tillbaka på den omräknade planen → "Outside plan window" → RemoteStop. Exakt den abort Bug 28 förhindrar, åter-exponerad av en omstart. Samma klass som Bug 30 (in-memory sessionstillstånd förloras vid omstart).
+
+**Fix:** Persistera `session_plan_intervals` i Store (datetimes som ISO-strängar) och återställ i `_load_state()`. Saknad nyckel/`None` → oförändrat beteende.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_save_state()` serialiserar `_session_plan_intervals`; `_load_state()` parsar tillbaka till `(datetime, datetime)`-tupler |
+
+**Verifiering:** kompilerar, alla suiter gröna. Deployad live (medan bilen var idle → ingen aktiv laddning avbröts); nyckeln round-trippar i `.storage` (`null` när idle), ren laddning utan fel. Med Bug 30 + Bug 31 överlever nu allt sessionstillstånd som styr aktiv laddning en omstart → deploy-omstarter mitt i laddning är säkra.
+
+---
+
 ## 2026-06-20: Bug 30 – SOC-estimatets baslinje desyncade vid omstart mitt i en session
 
 **Problem:** Laddning stoppade strax efter 04 med bilen på ~83 % (mål 100 %), endast 1,11 kWh levererat 04–06. Loggen: `Mål nått (SOC 100% >= mål 100%), stoppar` + auto-start undertryckt – HA *trodde* att bilen var full.

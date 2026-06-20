@@ -529,6 +529,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "cable_session_cost_sek": self._cable_session_cost_sek,
             "session_start_soc": self._session_start_soc,   # Bug 30: SOC estimation baseline
             "session_total_kwh": self._session_total_kwh,   # Bug 30: energy paired with that baseline
+            "session_plan_intervals": (   # Bug 31: persist Bug 28 frozen plan (was in-memory only)
+                [[s.isoformat(), e.isoformat()] for s, e in self._session_plan_intervals]
+                if self._session_plan_intervals is not None else None
+            ),
             "charge_mode": self.charge_mode,
             "manual_deadline": self.manual_deadline_str,
             "target_soc": self.target_soc,
@@ -605,6 +609,20 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     "[Store] Återställde session-baslinje: start_soc=%.1f%% total_kwh=%.2f",
                     self._session_start_soc, self._session_total_kwh,
                 )
+            # Bug 31: restore Bug 28's frozen plan windows so a mid-charge restart doesn't
+            # re-expose the "Outside plan window" abort (the windows were in-memory only).
+            _spi = data.get("session_plan_intervals")
+            if _spi:
+                try:
+                    self._session_plan_intervals = [
+                        (datetime.fromisoformat(s), datetime.fromisoformat(e)) for s, e in _spi
+                    ]
+                    _LOGGER.info(
+                        "[Store] Återställde fryst planfönster (%d intervall)",
+                        len(self._session_plan_intervals),
+                    )
+                except (ValueError, TypeError):
+                    self._session_plan_intervals = None
             _LOGGER.info("[Store] Laddade state: cable=%s tx=%s cost=%.2f energy=%.3f mode=%s",
                          self.ocpp.state.cable_connected, self.ocpp.state.transaction_id,
                          self.ocpp.state.accumulated_cost, self.ocpp.state.energy_kwh,
