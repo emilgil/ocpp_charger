@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import OCPPCoordinator
 from .const import (
@@ -42,10 +43,11 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class ChargeModeSelect(SelectEntity):
+class ChargeModeSelect(CoordinatorEntity, SelectEntity):
     """Select the charging mode."""
 
     def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)   # Bug 32: subscribe to coordinator pushes
         self._coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_charge_mode"
         self._attr_name = "Charging Mode"
@@ -64,7 +66,7 @@ class ChargeModeSelect(SelectEntity):
             await self._coordinator.async_start_if_ready()
 
 
-class ActiveVehicleSelect(SelectEntity):
+class ActiveVehicleSelect(CoordinatorEntity, SelectEntity):
     """Select which vehicle is currently connected to the charger.
 
     Switching the vehicle instantly updates battery capacity and the
@@ -72,6 +74,7 @@ class ActiveVehicleSelect(SelectEntity):
     """
 
     def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)   # Bug 32: subscribe to coordinator pushes
         self._coordinator = coordinator
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_active_vehicle"
@@ -125,10 +128,11 @@ class ActiveVehicleSelect(SelectEntity):
                 return
 
 
-class PlannerAlgorithmSelect(SelectEntity):
+class PlannerAlgorithmSelect(CoordinatorEntity, SelectEntity):
     """Select the charge planning algorithm."""
 
     def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)   # Bug 32: subscribe to coordinator pushes
         self._coordinator = coordinator
         self._entry = entry  # Bug 11: needed for persisting to entry.data
         self._attr_unique_id = f"{entry.entry_id}_{SELECT_PLANNER_ALGORITHM}"
