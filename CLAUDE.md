@@ -45,10 +45,9 @@ custom_components/ocpp_charger/
   smart_charge.py      – Prisbeslut (fallback när ingen plan finns)
   charge_planner.py    – Optimal laddplanering baserat på spotpriser
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
-  deadline.py          – Feature 4: parse_hhmm + compute_deadline (stdlib-only, testbar)
+  deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi (stdlib-only, testbar)
   price_cap.py         – Feature 5: select_price_cap_slots – slots ≤ pristak (stdlib-only, testbar)
-  text.py              – Feature 4: ManualDeadlineText (HH:MM-deadline)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
   manifest.json
@@ -159,7 +158,7 @@ _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
 _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
 _day_charging_dismissed: bool             # Bug 3/21: användaren tryckt "🚫 Avsluta"
 _day_charging_dismissed_until: datetime | None  # Bug 21: nollställs vid lokal midnatt
-manual_deadline_str: str                  # Feature 4: HH:MM-deadline (persisterad via Store), "" = automatisk
+_deadline_entity_id: str                  # Feature 6: "input_datetime.charger_target_time" (deadline läses därifrån)
 price_cap_ore_kwh: float                  # Feature 5: pristak öre/kWh (persisterad via Store), 0 = av
 _price_cap_intervals: list[tuple]         # Feature 5: frusna planfönster för pristaksplanen
 _price_cap_raw_slots: list[dict]          # Feature 5: [{time, price_kwh, energy_kwh}] för sensorn
@@ -211,10 +210,10 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Override Charging Schedule | Manuell override av dag/natt-schema |
 | Allow Day Charging | Tillåt dagladdning i Smart-läge |
 
-### Text-entiteter (1 st)
-| Text | Beskrivning |
-|------|-------------|
-| Manual Deadline | HH:MM-deadline (Feature 4). Tom = automatisk (vardag 06:00 / helg ingen). Rensas vid urkoppling. Persisterad via Store. |
+### Manuell deadline (HA-helper, ingen egen entitet)
+Feature 6 tog bort `text.*_manual_deadline`. Deadlinen sätts nu i HA-helpern
+`input_datetime.charger_target_time` (skapas manuellt; `00:00` = automatisk). Se avsnittet
+"Manuell deadline (Feature 4 → Feature 6)".
 
 ### Number-entiteter (6 st)
 | Number | Beskrivning |
@@ -289,25 +288,29 @@ Snapshots i `_charge_windows_energy_at_slot_start` nycklas på slot-start-ISO.
 `native_value` = antal slots; attribut = plan-metadata + `slots`-lista. OBS: vid infeasible/ingen plan
 behålls senaste slots (rensas ej) – `calculated_at` visar åldern.
 
-## Manuell deadline (Feature 4)
-Text-entiteten `text.ocpp_manual_deadline` ersätter den gamla **Deadline Override-switchen** (Feature 1,
-borttagen). Användaren skriver in ett klockslag `HH:MM` som laddningsdeadline; tomt fält → automatiskt
-beteende (vardag 06:00, helg ingen fast deadline). Om tiden redan passerat idag → imorgon samma tid.
+## Manuell deadline (Feature 4 → Feature 6)
+Den manuella laddningsdeadlinen sätts via HA-helpern `input_datetime.charger_target_time`
+(`has_time=True`, `has_date=False`). **Feature 6** ersatte den tidigare egna `ManualDeadlineText`
+(`text.py`, borttagen). `00:00` = "ej satt" → automatiskt beteende (vardag 06:00, helg/dag slutet av
+prisdata); valt klockslag används annars, rullar till imorgon om passerat.
 
-**Ren logik i `deadline.py`** (stdlib-only, testbar fristående; `tests/test_deadline.py`, 15 tester):
+**Ren logik i `deadline.py`** (stdlib-only, testbar fristående; `tests/test_deadline.py`, 22 tester):
 - `parse_hhmm(value)` – `"H:MM"`/`"HH:MM"` → `(hour, minute)` med intervallkoll (0–23, 0–59), annars `None`.
+- `helper_state_to_hhmm(state)` (Feature 6) – `input_datetime`-state (`"HH:MM:SS"`) → `"HH:MM"`;
+  `00:00`/None/`unknown`/`unavailable`/ogiltigt → `""` (= automatisk).
 - `compute_deadline(now_local, local_tz, all_prices, manual_deadline_str, deadline_hour, allow_day_charging)` –
   prioritet manuell → `allow_day_charging`/helg sista prisintervall +15 min (annars fallback 48h) → vardag
-  06:00 (Bug 27). `_compute_deadline()` i `__init__.py` är en tunn wrapper som skickar med
-  `self.allow_day_charging`; `text.py` återanvänder `parse_hhmm` för validering.
+  06:00 (Bug 27).
 
-**Persistens (bakgrundsbug):** `manual_deadline_str` sparas/läses via Store (`_save_state`/`_load_state`,
-nyckel `"manual_deadline"`) eftersom det gamla in-memory-värdet nollställdes av konkurrerande
-uppdateringscykler. `async_set_value` anropar `await _save_state()` direkt; vid kabelurkoppling
-(status `Available`) rensas fältet och sparas via `hass.async_create_task(self._save_state())`.
+**Koordinator (`__init__.py`):** `_get_manual_deadline_str()` läser helperns state via `helper_state_to_hhmm`;
+`_compute_deadline()` skickar resultatet till `compute_deadline`. Vid kabelurkoppling (status `Available`)
+nollar `_reset_deadline_helper()` helpern till `00:00:00` via `input_datetime.set_datetime` – **guardat**
+så att ett saknat helper-objekt inte spammar fel. Ingen Store-nyckel längre (HA:s `input_datetime`-lagring
+sköter persistensen); gammal `"manual_deadline"`-nyckel i Store ignoreras tyst.
 
-OBS: den gamla `switch.*_deadline_override`-entiteten blir föräldralös i entitetsregistret efter deploy –
-radera manuellt via Inställningar → Enheter & tjänster → Entiteter.
+OBS: helpern måste finnas (skapas manuellt i Inställningar → Hjälpare → Tid). Integrationen skapar den
+**inte** (HA:s API för programmatisk skapning är instabilt/versionsberoende). Saknas den → automatisk
+deadline. Den gamla `text.*_manual_deadline`-entiteten blir föräldralös efter deploy – radera manuellt.
 
 ## Pristaksladdning (Feature 5)
 Number-entiteten `number.*_price_cap` (`Price Cap`, 0–500 öre/kWh) aktiverar ett pristaksläge i
@@ -336,7 +339,7 @@ Feature 4:s manuella deadline. Auto-start fryser `plan.active_intervals` i `_ses
 
 ## Persistens (Store)
 `self._store` (HA Storage) sparar bl.a. `cable_connected`, `transaction_id`, `energy_kwh`,
-`manual_deadline` (Feature 4), `price_cap_ore_kwh` (Feature 5),
+`price_cap_ore_kwh` (Feature 5),
 `allow_day_charging`/`day_charging_manual_override` (Bug 26)
 och `session_start_soc`/`session_total_kwh` (Bug 30) mellan omstarter.
 - `_save_state()` anropas i varje `_async_update_data()`-cykel

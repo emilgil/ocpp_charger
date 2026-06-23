@@ -50,6 +50,7 @@ from .const import (
     CONF_NOTIFY_ON_STOP,
     CONF_NOTIFY_DASHBOARD_URL,
     DEFAULT_CHARGE_DEADLINE_HOUR,
+    INPUT_DATETIME_DEADLINE,
     SENSOR_PLAN_START,
     SENSOR_PLAN_END,
     DEFAULT_MQTT_PREFIX,
@@ -93,7 +94,7 @@ from .rest_client import ChargerRestClient
 from .charge_planner import ChargePlan, plan_cheapest_window, _to_utc, INTERVAL_MINUTES, INTERVAL_HOURS
 from .price_cap import select_price_cap_slots
 from .charge_windows import build_charge_windows, update_windows_actual
-from .deadline import compute_deadline
+from .deadline import compute_deadline, helper_state_to_hhmm
 from .soc_estimate import estimate_soc
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
@@ -107,7 +108,6 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.BINARY_SENSOR,
     Platform.SWITCH,
-    Platform.TEXT,        # Feature 4: manual deadline
 ]
 
 
@@ -371,7 +371,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._day_charging_manual_override: bool = False  # True = user toggled manually
         self._force_day_plan: bool = False   # True after user picks day via notification
         self.allow_day_charging: bool = self._compute_allow_day_charging()
-        self.manual_deadline_str: str = ""  # Feature 4: HH:MM deadline, or "" for automatic
+        # Feature 6: manual deadline now comes from the input_datetime helper
+        # (read on demand via _get_manual_deadline_str), not an in-memory string.
+        self._deadline_entity_id: str = INPUT_DATETIME_DEADLINE
 
         # Feature 5: price cap charging (0 = disabled → ordinary Smart planning)
         self.price_cap_ore_kwh: float = 0.0
@@ -540,7 +542,6 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 if self._session_plan_intervals is not None else None
             ),
             "charge_mode": self.charge_mode,
-            "manual_deadline": self.manual_deadline_str,
             "price_cap_ore_kwh": self.price_cap_ore_kwh,   # Feature 5
             "target_soc": self.target_soc,
             "target_kwh": self.target_kwh,
@@ -569,7 +570,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.ocpp.state.total_cost = data.get("total_cost", 0.0)
             self._cable_session_energy_kwh = data.get("cable_session_energy_kwh", 0.0)
             self._cable_session_cost_sek = data.get("cable_session_cost_sek", 0.0)
-            self.manual_deadline_str = data.get("manual_deadline", "")
+            # Feature 6: manual deadline lives in the input_datetime helper now;
+            # any legacy "manual_deadline" key in old Store data is ignored.
             self.price_cap_ore_kwh = float(data.get("price_cap_ore_kwh", 0.0))  # Feature 5
             self._last_cost_energy_kwh = data.get("energy_kwh", 0.0)
             if data.get("session_start"):
@@ -1462,23 +1464,49 @@ class OCPPCoordinator(DataUpdateCoordinator):
             return
         self.allow_day_charging = self._compute_allow_day_charging()
 
+    def _get_manual_deadline_str(self) -> str:
+        """Feature 6: read the manual deadline from the input_datetime helper.
+
+        Returns 'HH:MM' when the helper is set to a non-midnight time, otherwise
+        '' (= automatic deadline). 00:00 / missing / unknown all mean "unset".
+        """
+        state = self.hass.states.get(self._deadline_entity_id)
+        return helper_state_to_hhmm(state.state if state is not None else None)
+
+    def _reset_deadline_helper(self) -> None:
+        """Feature 6: reset the input_datetime helper to 00:00:00 (= automatic).
+
+        Guarded: only fires the service call if the helper exists, so a missing
+        helper can't spam errors. Called on cable disconnect (Available).
+        """
+        if self.hass.states.get(self._deadline_entity_id) is None:
+            return
+        self.hass.async_create_task(
+            self.hass.services.async_call(
+                "input_datetime",
+                "set_datetime",
+                {"entity_id": self._deadline_entity_id, "time": "00:00:00"},
+                blocking=False,
+            )
+        )
+
     def _compute_deadline(
         self,
         now_local: datetime,
         local_tz,
         all_prices: list,
     ) -> datetime:
-        """Return the charging deadline (Feature 4).
+        """Return the charging deadline (Feature 4 / Feature 6).
 
-        Delegates to deadline.compute_deadline: a manual HH:MM value wins;
-        otherwise allow_day_charging / weekend → end of available price data,
-        weekday → 06:00 (Bug 27).
+        Delegates to deadline.compute_deadline: a manual HH:MM value (now read
+        from the input_datetime helper) wins; otherwise allow_day_charging /
+        weekend → end of available price data, weekday → 06:00 (Bug 27).
         """
         return compute_deadline(
             now_local,
             local_tz,
             all_prices,
-            manual_deadline_str=self.manual_deadline_str,
+            manual_deadline_str=self._get_manual_deadline_str(),  # Feature 6
             deadline_hour=DEFAULT_CHARGE_DEADLINE_HOUR,
             allow_day_charging=self.allow_day_charging,
         )
@@ -1520,12 +1548,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._day_charging_dismissed_until = None  # Bug 21
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
-            self.manual_deadline_str = ""    # Feature 4: clear manual deadline on disconnect
+            self._reset_deadline_helper()    # Feature 6: clear manual deadline on disconnect
             self.price_cap_ore_kwh = 0.0     # Feature 5: clear price cap on disconnect
             self._price_cap_intervals = []
             self._price_cap_raw_slots = []
-            self._last_plan_update = None    # Feature 4/5: force re-plan with automatic deadline
-            self.hass.async_create_task(self._save_state())  # Feature 4/5: persist the clear
+            self._last_plan_update = None    # Feature 5/6: force re-plan with automatic deadline
+            self.hass.async_create_task(self._save_state())  # Feature 5: persist the clear
             _LOGGER.debug("[Bug13A] Available → cable_was_available=True")
 
         # ── Cable connected (Preparing) ──────────────────────────────────
