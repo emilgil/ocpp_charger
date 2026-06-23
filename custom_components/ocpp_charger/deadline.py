@@ -1,8 +1,10 @@
-"""Feature 4: compute the charging deadline.
+"""Feature 4 / Feature 6: compute the charging deadline.
 
 Pure, stdlib-only helpers (mirrors charge_planner.py) so they can be unit-tested
 standalone without importing Home Assistant.  The coordinator's _compute_deadline
-and the ManualDeadlineText entity both consume these.
+consumes compute_deadline; _get_manual_deadline_str consumes helper_state_to_hhmm
+to read the input_datetime.charger_target_time helper (Feature 6, replaces the
+former ManualDeadlineText entity).
 """
 from __future__ import annotations
 
@@ -21,6 +23,26 @@ def parse_hhmm(value: str) -> tuple[int, int] | None:
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     return hour, minute
+
+
+def helper_state_to_hhmm(state: str | None) -> str:
+    """Feature 6: convert an ``input_datetime`` (has_time) state to an HH:MM string.
+
+    The ``input_datetime.charger_target_time`` helper reports its state as
+    ``"HH:MM:SS"``.  ``00:00`` is treated as the "unset" sentinel (midnight is an
+    implausible charge deadline) and maps to ``""`` = automatic deadline, as do
+    None / unknown / unavailable / unparseable values.  Otherwise returns the
+    normalised ``"HH:MM"`` that ``compute_deadline`` consumes via ``parse_hhmm``.
+    """
+    if not state or state in ("unknown", "unavailable"):
+        return ""
+    parsed = parse_hhmm(state[:5])
+    if parsed is None:
+        return ""
+    hour, minute = parsed
+    if hour == 0 and minute == 0:
+        return ""   # 00:00 = unset
+    return f"{hour:02d}:{minute:02d}"
 
 
 def _to_utc(dt: datetime) -> datetime:

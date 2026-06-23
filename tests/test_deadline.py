@@ -150,6 +150,44 @@ def test_weekday_allow_day_charging_false_still_six():
     assert d == at(MON, 6, 0)
 
 
+# ── helper_state_to_hhmm (Feature 6: input_datetime helper → HH:MM) ────────
+def test_helper_state_none_is_empty():
+    assert deadline.helper_state_to_hhmm(None) == ""
+
+
+def test_helper_state_unknown_unavailable_empty():
+    for bad in ("unknown", "unavailable", ""):
+        assert deadline.helper_state_to_hhmm(bad) == "", bad
+
+
+def test_helper_state_midnight_is_unset():
+    assert deadline.helper_state_to_hhmm("00:00:00") == ""
+    assert deadline.helper_state_to_hhmm("00:00") == ""
+
+
+def test_helper_state_valid_time():
+    assert deadline.helper_state_to_hhmm("07:30:00") == "07:30"
+    assert deadline.helper_state_to_hhmm("23:45:00") == "23:45"
+
+
+def test_helper_state_just_after_midnight_is_valid():
+    # 00:30 is a real deadline (half past midnight), NOT the unset sentinel.
+    assert deadline.helper_state_to_hhmm("00:30:00") == "00:30"
+
+
+def test_helper_state_garbage_is_empty():
+    for bad in ("abc", "99:99:00", "7", "0815"):
+        assert deadline.helper_state_to_hhmm(bad) == "", bad
+
+
+def test_helper_state_feeds_compute_deadline():
+    # End-to-end: a 07:30 helper state drives the manual deadline branch.
+    now = at(MON, 5, 0)
+    hhmm = deadline.helper_state_to_hhmm("07:30:00")
+    d = deadline.compute_deadline(now, UTC, [], manual_deadline_str=hhmm)
+    assert d == at(MON, 7, 30)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

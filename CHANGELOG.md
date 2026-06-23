@@ -1,5 +1,44 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-23: Feature 6 – Deadline via `input_datetime`-helper (ersätter ManualDeadlineText)
+
+**Funktion:** Den manuella laddningsdeadlinen sätts nu via HA-helpern
+`input_datetime.charger_target_time` (`has_time=True`, `has_date=False`) istället för den egna
+`TextEntity` (`ManualDeadlineText` i `text.py`, borttagen). Beteendet är oförändrat mot Feature 4:
+`00:00` = "ej satt" → automatisk deadline (vardag 06:00 / helg–dag slutet av prisdata), annat klockslag
+används och rullar till imorgon om passerat. Vid kabelurkoppling (`Available`) nollas helpern till
+`00:00:00`. Logiken i `deadline.py:compute_deadline` (inkl. Bug 27) är oförändrad – bara *källan* för
+HH:MM-strängen bytte.
+
+**Design:** Vald approach: **läs den befintliga helpern, skapa den inte.** HA:s programmatiska API för
+`input_datetime` är instabilt/versionsberoende (specens `InputDatetimeStorageCollection` heter
+`DateTimeStorageCollection` i HA 2025.1.4 och skulle krascha), och användaren hade redan skapat helpern
+manuellt. Saknas helpern → automatisk deadline (graceful). Reset-anropet vid urkoppling är **guardat** så
+ett saknat helper-objekt inte spammar fel.
+
+| Fil | Ändring |
+|-----|---------|
+| `text.py` | **BORTTAGEN** (hela `ManualDeadlineText`-plattformen) |
+| `deadline.py` | Ny ren funktion `helper_state_to_hhmm(state)` (`"HH:MM:SS"`/`00:00`/None/unknown → `"HH:MM"`/`""`) |
+| `__init__.py` | Bort `Platform.TEXT` + `manual_deadline_str` (+ Store-nyckel); nya `_deadline_entity_id`, `_get_manual_deadline_str()`, `_reset_deadline_helper()`; `_compute_deadline` läser helpern |
+| `const.py` | `INPUT_DATETIME_DEADLINE = "input_datetime.charger_target_time"` |
+
+**Persistens:** ingen Store-nyckel längre – HA:s egen `input_datetime`-lagring sköter det. Gammal
+`"manual_deadline"`-nyckel i sparad Store-data ignoreras tyst (`data.get(...)` läses inte längre).
+
+**Verifiering:** TDD (7 nya enhetstester för `helper_state_to_hhmm`, totalt 22 i `test_deadline.py`,
+röd→grön); alla 5 fristående testsviter gröna; alla komponentfiler byte-kompilerar; importtest under
+HA 2025.1.4 (`Platform.TEXT` borta ur `PLATFORMS`, nya metoder finns); 9 integrationskontroller mot
+den stubbe-koordinatorn (`_get_manual_deadline_str`, `_compute_deadline` end-to-end, guardad reset).
+Deployad live (bilen idle, helper = `00:00:00`) utan fel: integration laddade rent, ingen text-plattform,
+deadline beräknades till automatisk `2026-06-24 06:00` (= helper 00:00 → "" → vardag 06:00). Live-obs av
+manuellt satt klockslag kräver att helpern sätts i UI:t (core-API 401 från CC).
+
+**OBS:** den gamla `text.*_manual_deadline`-entiteten blir föräldralös i entitetsregistret efter deploy –
+radera manuellt via Inställningar → Enheter & tjänster → Entiteter.
+
+---
+
 ## 2026-06-23: Feature 5 – Pristaksladdning (Price Cap)
 
 **Funktion:** Nytt pristaksläge i Smart-läget. När `Price Cap` (öre/kWh) > 0 ersätts den

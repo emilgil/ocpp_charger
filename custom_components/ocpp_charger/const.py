@@ -62,6 +62,11 @@ NUMBER_BATTERY_CAPACITY = "battery_capacity"
 NUMBER_PRICE_CAP        = "price_cap_ore_kwh"
 SENSOR_PRICE_CAP_STATUS = "price_cap_status"
 
+# Feature 6: input_datetime helper for the manual charging deadline
+# (replaces the Feature 4 ManualDeadlineText entity). Must be created manually
+# in HA (Settings → Helpers → Time); the integration only reads/resets it.
+INPUT_DATETIME_DEADLINE = "input_datetime.charger_target_time"
+
 # Button unique id suffixes
 BUTTON_START = "start_charging"
 BUTTON_STOP = "stop_charging"
