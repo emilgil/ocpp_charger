@@ -90,7 +90,8 @@ from .ocpp_client import ChargerState, OCPPClient
 from .smart_charge import SmartChargeController
 from .current_schedule import CurrentSchedule
 from .rest_client import ChargerRestClient
-from .charge_planner import ChargePlan, plan_cheapest_window, _to_utc
+from .charge_planner import ChargePlan, plan_cheapest_window, _to_utc, INTERVAL_MINUTES, INTERVAL_HOURS
+from .price_cap import select_price_cap_slots
 from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline
 from .soc_estimate import estimate_soc
@@ -372,6 +373,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self.allow_day_charging: bool = self._compute_allow_day_charging()
         self.manual_deadline_str: str = ""  # Feature 4: HH:MM deadline, or "" for automatic
 
+        # Feature 5: price cap charging (0 = disabled → ordinary Smart planning)
+        self.price_cap_ore_kwh: float = 0.0
+        self._price_cap_intervals: list[tuple[datetime, datetime]] = []  # merged active windows
+        self._price_cap_raw_slots: list[dict] = []  # [{time, price_kwh, energy_kwh}] for the sensor
+
         # Notifications
         self.notifier = ChargerNotifier(
             hass=hass,
@@ -535,6 +541,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             ),
             "charge_mode": self.charge_mode,
             "manual_deadline": self.manual_deadline_str,
+            "price_cap_ore_kwh": self.price_cap_ore_kwh,   # Feature 5
             "target_soc": self.target_soc,
             "target_kwh": self.target_kwh,
             "active_vehicle_name": self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None,
@@ -563,6 +570,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._cable_session_energy_kwh = data.get("cable_session_energy_kwh", 0.0)
             self._cable_session_cost_sek = data.get("cable_session_cost_sek", 0.0)
             self.manual_deadline_str = data.get("manual_deadline", "")
+            self.price_cap_ore_kwh = float(data.get("price_cap_ore_kwh", 0.0))  # Feature 5
             self._last_cost_energy_kwh = data.get("energy_kwh", 0.0)
             if data.get("session_start"):
                 try:
@@ -1397,6 +1405,18 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
 
+    async def set_price_cap(self, cap_ore_kwh: float) -> None:
+        """Feature 5: update the price cap and immediately re-plan.
+
+        cap_ore_kwh > 0 activates price-cap mode in Smart charging; 0 restores
+        ordinary Smart planning.
+        """
+        self.price_cap_ore_kwh = max(0.0, cap_ore_kwh)
+        self._last_plan_update = None  # bypass throttle
+        self._update_charge_plan()
+        self.async_set_updated_data(self.ocpp.state)
+        await self._save_state()
+
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
@@ -1501,8 +1521,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
             self.manual_deadline_str = ""    # Feature 4: clear manual deadline on disconnect
-            self._last_plan_update = None    # Feature 4: force re-plan with automatic deadline
-            self.hass.async_create_task(self._save_state())  # Feature 4: persist the clear
+            self.price_cap_ore_kwh = 0.0     # Feature 5: clear price cap on disconnect
+            self._price_cap_intervals = []
+            self._price_cap_raw_slots = []
+            self._last_plan_update = None    # Feature 4/5: force re-plan with automatic deadline
+            self.hass.async_create_task(self._save_state())  # Feature 4/5: persist the clear
             _LOGGER.debug("[Bug13A] Available → cable_was_available=True")
 
         # ── Cable connected (Preparing) ──────────────────────────────────
@@ -1735,6 +1758,16 @@ class OCPPCoordinator(DataUpdateCoordinator):
             local_tz = tz.utc
 
         now_local = datetime.now(local_tz)
+
+        # ── Feature 5: Price cap mode ──────────────────────────────────────
+        # When a price cap is set in Smart mode, the ordinary cheapest-window
+        # planner is replaced by a simple rule: charge every slot ≤ the cap
+        # (still respecting deadline + allow_day_charging). SoC target is
+        # enforced by _charging_goal_reached() in _update_smart_charging().
+        if self.charge_mode == CHARGE_MODE_SMART and self.price_cap_ore_kwh > 0:
+            self._update_price_cap_plan(all_prices, now_local, local_tz)
+            return
+
         deadline_local = self._compute_deadline(now_local, local_tz, all_prices)
 
         # Energy needed – multi-vehicle: use active vehicle when cable connected (Bug 6)
@@ -2000,6 +2033,109 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         day_plan.avg_price_ore_kwh, day_plan.feasible,
                         night_plan.avg_price_ore_kwh,
                     )
+
+    def _update_price_cap_plan(
+        self,
+        all_prices: list,
+        now_local: datetime,
+        local_tz,
+    ) -> None:
+        """Feature 5: build the charge plan from every slot ≤ the price cap.
+
+        Thin HA-glue wrapper around price_cap.select_price_cap_slots. Respects
+        the same deadline and allow_day_charging constraints as the ordinary
+        planner; the SoC target is enforced by _charging_goal_reached().
+        """
+        deadline_local = self._compute_deadline(now_local, local_tz, all_prices)
+
+        # Price unit for öre/kWh conversion (same source as the price sensor).
+        unit = ""
+        forecast_entity = self.config.get(CONF_PRICE_FORECAST_ENTITY, "")
+        if forecast_entity:
+            state_obj = self.hass.states.get(forecast_entity)
+            if state_obj is not None:
+                unit = state_obj.attributes.get("unit_of_measurement", "")
+
+        prices_ore = [
+            {"time": iv["time"],
+             "ore_kwh": self._to_ore_per_kwh(float(iv["value"]), unit)}
+            for iv in all_prices
+        ]
+
+        # Schedule-aware power per slot, capped by the active vehicle's max
+        # current (identical to the ordinary planner).
+        schedule = self.schedule
+        vehicle_max_a = int((self.active_vehicle or {}).get(VEHICLE_MAX_CURRENT_A, 0))
+
+        def _power_fn(local_dt: datetime) -> float:
+            limit_a = schedule.current_limit_at(local_dt)
+            if vehicle_max_a > 0:
+                limit_a = min(limit_a, vehicle_max_a)
+            return (limit_a * DEFAULT_VOLTAGE * self.num_phases) / 1000.0
+
+        def _is_day_fn(local_dt: datetime) -> bool:
+            return schedule.is_day_time(local_dt.time())
+
+        result = select_price_cap_slots(
+            prices_ore,
+            self.price_cap_ore_kwh,
+            now_local,
+            deadline_local,
+            power_fn=_power_fn,
+            is_day_fn=_is_day_fn,
+            allow_day_charging=self.allow_day_charging,
+            local_tz=local_tz,
+        )
+
+        self._price_cap_intervals = result.active_intervals
+        self._price_cap_raw_slots = result.qualifying_slots
+
+        deadline_hhmm = deadline_local.astimezone(local_tz).strftime("%H:%M")
+        if result.feasible:
+            slots = result.qualifying_slots
+            first_t = slots[0]["time"]
+            last_t = slots[-1]["time"] + timedelta(minutes=INTERVAL_MINUTES)
+            active_minutes = sum(
+                int((e - s).total_seconds() / 60) for s, e in result.active_intervals
+            )
+            self.charge_plan = ChargePlan(
+                start=first_t,
+                end=last_t,
+                duration_minutes=active_minutes,
+                energy_kwh=round(result.total_kwh, 2),
+                estimated_cost_sek=round(result.total_cost_sek, 2),
+                avg_price_ore_kwh=round(result.avg_price_ore_kwh, 1),
+                intervals=[
+                    {
+                        "time": s["time"].isoformat(),
+                        "price_ore_kwh": round(s["price_kwh"] * 100, 2),
+                        "power_kw": round(s["energy_kwh"] / INTERVAL_HOURS, 2),
+                        "energy_kwh": round(s["energy_kwh"], 4),
+                    }
+                    for s in slots
+                ],
+                active_intervals=result.active_intervals,
+                feasible=True,
+                message=(
+                    f"Price cap {self.price_cap_ore_kwh:.0f} öre/kWh – "
+                    f"{len(slots)} slots (deadline {deadline_hhmm})"
+                ),
+            )
+            _LOGGER.info(
+                "[PriceCap] %d slots ≤ %.0f öre/kWh → %.2f kWh / %.2f SEK "
+                "(deadline %s, allow_day=%s)",
+                len(slots), self.price_cap_ore_kwh, result.total_kwh,
+                result.total_cost_sek, deadline_hhmm, self.allow_day_charging,
+            )
+        else:
+            self.charge_plan = None
+            _LOGGER.info(
+                "[PriceCap] Inga slots ≤ %.0f öre/kWh inom deadline %s "
+                "(allow_day=%s) – laddning pausad",
+                self.price_cap_ore_kwh, deadline_hhmm, self.allow_day_charging,
+            )
+
+        self._rebuild_charge_windows()  # Bug 24: sync charge-windows sensor immediately
 
     def _rebuild_charge_windows(self) -> None:
         """Feature 3: rebuild _charge_windows from the current charge_plan.

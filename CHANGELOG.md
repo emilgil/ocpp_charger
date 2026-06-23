@@ -1,5 +1,47 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-23: Feature 5 – Pristaksladdning (Price Cap)
+
+**Funktion:** Nytt pristaksläge i Smart-läget. När `Price Cap` (öre/kWh) > 0 ersätts den
+ordinarie cheapest-window-planeraren av en enkel regel: ladda **varje** 15-minutersslot
+vars spotpris är ≤ taket. Pristaket respekterar samma begränsningar som ordinarie planering
+– deadline från `_compute_deadline()` (manuell HH:MM, helg/vardag, `allow_day_charging`) och
+dag/natt-schemat när `allow_day_charging=False`. SoC-målet gäller fortfarande som övre gräns
+(stopp via `_charging_goal_reached()`). Taket = 0 → ordinarie Smart-planering oförändrad.
+
+**Design:** Den rena urvalslogiken ligger i en ny stdlib-only-modul `price_cap.py`
+(`select_price_cap_slots()` + `PriceCapPlan`), testbar fristående precis som
+`charge_planner.py`/`deadline.py`/`soc_estimate.py`/`charge_windows.py`. Koordinatorns
+`_update_price_cap_plan()` är en tunn HA-wrapper som matar in priser (öre via
+`_to_ore_per_kwh`), schemamedveten effekt per slot (kapad av fordonets maxström) och deadline,
+och bygger ett `ChargePlan` så att auto-start/stopp, ETA, Charge Windows-sensorn m.m. fungerar
+identiskt med ordinarie plan. Avvek medvetet från specens inline-variant för testbarhet; rättade
+även två fel i specen: `schedule.current_limit(datetime)` (fel typ → `TypeError`) → `current_limit_at()`,
+och bräcklig `limit_a == day_current_a`-dagdetektion → `is_day_time()`.
+
+**Persistens:** `price_cap_ore_kwh` sparas/läses via Store och nollställs vid kabelurkoppling
+(`Available`), precis som den manuella deadlinen (Feature 4).
+
+| Fil | Ändring |
+|-----|---------|
+| `price_cap.py` | **Ny** stdlib-only-modul: `select_price_cap_slots()` + `PriceCapPlan` |
+| `const.py` | `NUMBER_PRICE_CAP`, `SENSOR_PRICE_CAP_STATUS` |
+| `__init__.py` | Fält `price_cap_ore_kwh`/`_price_cap_intervals`/`_price_cap_raw_slots`; `set_price_cap()`; pristaksgren i `_update_charge_plan()`; `_update_price_cap_plan()`; persistens + rensning vid `Available` |
+| `number.py` | Ny entitet `PriceCapNumber` (0–500 öre/kWh, box) |
+| `sensor.py` | Ny diagnostiksensor `PriceCapStatusSensor` (slots, expected_kwh/cost) |
+| `tests/test_price_cap.py` | **Ny** – 11 enhetstester (TDD: röd→grön) |
+
+**Verifiering:** TDD (11 enhetstester skrivna först, sedda falla, sedan gröna); alla 5
+fristående testsviter gröna; alla komponentfiler byte-kompilerar; importtest under HA 2025.1.4
+(paket + number + sensor laddar rent, entiteter/metoder/konstanter finns); 11 integrationskontroller
+mot den riktiga koordinatorglue:n (`CurrentSchedule`/`_compute_deadline`/`_to_ore_per_kwh`/
+`_rebuild_charge_windows`) som täcker regressionsscenario #1–5. Deployad live (bilen idle) utan fel:
+integrationen + båda nya entiteterna laddade rent med korrekt konfiguration, ordinarie planering
+körde med tak=0 (regression #1 live). Live-observation av en `[PriceCap]`-loggrad kräver att taket
+sätts i UI:t eller en kabelsession (core-API 401 från CC, kunde ej fyra service-anropet).
+
+---
+
 ## 2026-06-20: Bug 32 – Select-entiteter uppdaterades inte vid extern statusändring
 
 **Problem:** När aktivt fordon byttes via en push-notis-knapp (`mobile_app_notification_action` → `set_active_vehicle`) uppdaterades inte `select.*_active_vehicle` i HA förrän nästa polling (~30 s) – backend bytte korrekt men entiteten skrev inte ut nytt state. Direkt val i selectorn fungerade (gick via entitetens egen `async_select_option`). Samma strukturella brist i `ChargeModeSelect` och `PlannerAlgorithmSelect`.

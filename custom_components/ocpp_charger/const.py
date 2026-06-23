@@ -58,6 +58,10 @@ NUMBER_TARGET_SOC = "target_soc"
 NUMBER_TARGET_KWH = "target_kwh"
 NUMBER_BATTERY_CAPACITY = "battery_capacity"
 
+# Price cap charging (Feature 5)
+NUMBER_PRICE_CAP        = "price_cap_ore_kwh"
+SENSOR_PRICE_CAP_STATUS = "price_cap_status"
+
 # Button unique id suffixes
 BUTTON_START = "start_charging"
 BUTTON_STOP = "stop_charging"
