@@ -34,9 +34,9 @@ custom_components/ocpp_charger/
   ocpp_client.py       – WebSocket OCPP 1.6-server, ChargerState
   config_flow.py       – Setup flow (4 steg) + options flow
   const.py             – Alla konstanter
-  sensor.py            – 22 sensorer
+  sensor.py            – 23 sensorer
   binary_sensor.py     – 3 binära sensorer
-  number.py            – 5 number-entiteter
+  number.py            – 6 number-entiteter
   select.py            – 3 select-entiteter
   switch.py            – 3 switchar
   button.py            – 2 knappar
@@ -47,6 +47,7 @@ custom_components/ocpp_charger/
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
   deadline.py          – Feature 4: parse_hhmm + compute_deadline (stdlib-only, testbar)
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi (stdlib-only, testbar)
+  price_cap.py         – Feature 5: select_price_cap_slots – slots ≤ pristak (stdlib-only, testbar)
   text.py              – Feature 4: ManualDeadlineText (HH:MM-deadline)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
@@ -56,17 +57,21 @@ custom_components/ocpp_charger/
 
 ## Arkitektur – laddningsstyrning (prioritetsordning)
 1. **Charge mode = Immediate** → ladda alltid
-2. **Charge mode = Smart + feasible plan** → ladda ENDAST inom `plan.start–plan.end`
+2. **Charge mode = Smart + `price_cap_ore_kwh > 0`** → pristaksläge (Feature 5): planen byggs
+   av alla slots ≤ taket via `_update_price_cap_plan()` istället för cheapest-window-planeraren.
+   Resten (auto-start/stopp inom `plan.active_intervals`, SoC-stopp) är identiskt.
+3. **Charge mode = Smart + feasible plan** → ladda ENDAST inom `plan.start–plan.end`
    - Auto-start: `_update_smart_charging()` skickar RemoteStart när klockan passerar `plan.start`
    - Auto-stop: RemoteStop vid `plan.end`
-3. **Charge mode = Smart + ingen plan** → priströskel-fallback (40:e percentilen)
-4. **Charge mode = Scheduled** → ladda inom konfigurerad tidsperiod
+4. **Charge mode = Smart + ingen plan** → priströskel-fallback (40:e percentilen)
+5. **Charge mode = Scheduled** → ladda inom konfigurerad tidsperiod
 
 ## Kontrollförändringar → omedelbar omplanering
 Dessa setters anropar `_update_charge_plan()` direkt:
 - `set_target_soc()`, `set_target_kwh()`
 - `set_allow_day_charging()`
 - `set_charge_mode()`
+- `set_price_cap()` (Feature 5 – async; sparar även Store)
 - `set_active_vehicle()` (även `_update_soc_from_ha()` + reset `_session_total_kwh` vid fordonsbyte)
 
 ## Viktiga skyddsmekanismer
@@ -155,6 +160,9 @@ _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdni
 _day_charging_dismissed: bool             # Bug 3/21: användaren tryckt "🚫 Avsluta"
 _day_charging_dismissed_until: datetime | None  # Bug 21: nollställs vid lokal midnatt
 manual_deadline_str: str                  # Feature 4: HH:MM-deadline (persisterad via Store), "" = automatisk
+price_cap_ore_kwh: float                  # Feature 5: pristak öre/kWh (persisterad via Store), 0 = av
+_price_cap_intervals: list[tuple]         # Feature 5: frusna planfönster för pristaksplanen
+_price_cap_raw_slots: list[dict]          # Feature 5: [{time, price_kwh, energy_kwh}] för sensorn
 target_soc: float                         # 80.0 default
 battery_capacity_kwh: float               # 64.0 default
 num_phases: int                           # 3
@@ -163,7 +171,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 
 ## Entiteter
 
-### Sensorer (22 st)
+### Sensorer (23 st)
 | Sensor | Beskrivning |
 |--------|-------------|
 | Status | Connector status (Available, Charging, etc.) |
@@ -187,6 +195,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Planner Savings | SEK skillnad mellan Greedy och Contiguous |
 | Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
 | Charge Windows | Diagnostisk: laddplanens slots med planerad + faktisk energi (Feature 3) |
+| Price Cap Status | Diagnostisk: antal slots ≤ pristaket + expected_kwh/expected_cost_sek (Feature 5) |
 
 ### Binära sensorer (3 st)
 | Sensor | Beskrivning |
@@ -207,7 +216,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 |------|-------------|
 | Manual Deadline | HH:MM-deadline (Feature 4). Tom = automatisk (vardag 06:00 / helg ingen). Rensas vid urkoppling. Persisterad via Store. |
 
-### Number-entiteter (5 st)
+### Number-entiteter (6 st)
 | Number | Beskrivning |
 |--------|-------------|
 | Max Charging Current | Övre strömgräns (A) |
@@ -215,6 +224,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Target Energy | Laddmål i kWh (0 = obegränsat) |
 | Battery Capacity | Batterikapacitet kWh |
 | Override Current | Manuell strömgräns vid override |
+| Price Cap | Pristak öre/kWh (0–500, 0 = av). Aktiverar pristaksläge i Smart (Feature 5). Persisterad via Store, rensas vid urkoppling. |
 
 ### Select-entiteter (3 st)
 | Select | Beskrivning |
@@ -299,9 +309,35 @@ uppdateringscykler. `async_set_value` anropar `await _save_state()` direkt; vid 
 OBS: den gamla `switch.*_deadline_override`-entiteten blir föräldralös i entitetsregistret efter deploy –
 radera manuellt via Inställningar → Enheter & tjänster → Entiteter.
 
+## Pristaksladdning (Feature 5)
+Number-entiteten `number.*_price_cap` (`Price Cap`, 0–500 öre/kWh) aktiverar ett pristaksläge i
+Smart-läget. När `price_cap_ore_kwh > 0` bypassar `_update_charge_plan()` den ordinarie
+cheapest-window-planeraren och anropar `_update_price_cap_plan()`: ladda **varje** 15-minutersslot
+vars spotpris är ≤ taket. SoC-målet gäller fortfarande som övre gräns (`_charging_goal_reached()`).
+Tak = 0 → ordinarie Smart-planering oförändrad.
+
+**Ren logik i `price_cap.py`** (stdlib-only, importerar bara `charge_planner`-hjälparna, testbar
+fristående; `tests/test_price_cap.py`, 11 tester, `python3 tests/test_price_cap.py`):
+- `select_price_cap_slots(prices, cap_ore_kwh, now, deadline, *, power_fn, is_day_fn, allow_day_charging, local_tz)`
+  → `PriceCapPlan` (qualifying_slots, merged active_intervals, total_kwh/cost, avg_ore).
+  Filtrerar på slot-**slut** mot `now` (Bug 22-semantik) och deadline; exkluderar dagslots när
+  `allow_day_charging=False`; droppar slots > taket.
+
+**Koordinator-wrapper** `_update_price_cap_plan()` (`__init__.py`): tunn HA-glue som konverterar
+priser till öre (`_to_ore_per_kwh`), bygger `power_fn` (schemamedveten via `schedule.current_limit_at`,
+kapad av fordonets maxström) och `is_day_fn` (`schedule.is_day_time`), hämtar deadline via
+`_compute_deadline()`, och bygger ett `ChargePlan` (inkl. `intervals` så Charge Windows-sensorn fungerar)
++ anropar `_rebuild_charge_windows()`. Inga slots → `charge_plan = None` (laddning pausad). Pristaks-
+grenen ligger efter throttle/goal-reached/RemoteStart-frysningskollarna, så de gäller även här.
+
+`price_cap_ore_kwh` persisteras via Store och nollställs vid kabelurkoppling (`Available`), precis som
+Feature 4:s manuella deadline. Auto-start fryser `plan.active_intervals` i `_session_plan_intervals`
+(Bug 28) även för pristaksplanen.
+
 ## Persistens (Store)
 `self._store` (HA Storage) sparar bl.a. `cable_connected`, `transaction_id`, `energy_kwh`,
-`manual_deadline` (Feature 4), `allow_day_charging`/`day_charging_manual_override` (Bug 26)
+`manual_deadline` (Feature 4), `price_cap_ore_kwh` (Feature 5),
+`allow_day_charging`/`day_charging_manual_override` (Bug 26)
 och `session_start_soc`/`session_total_kwh` (Bug 30) mellan omstarter.
 - `_save_state()` anropas i varje `_async_update_data()`-cykel
 - `_load_state()` anropas i `_delayed_soc_refresh()` (10s efter HA-start)

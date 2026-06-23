@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import OCPPCoordinator
-from .const import CONF_BATTERY_CAPACITY, CONF_CHARGER_ID, CONF_MAX_CURRENT, DEFAULT_BATTERY_CAPACITY_KWH, DOMAIN
+from .const import CONF_BATTERY_CAPACITY, CONF_CHARGER_ID, CONF_MAX_CURRENT, DEFAULT_BATTERY_CAPACITY_KWH, DOMAIN, NUMBER_PRICE_CAP
 
 
 async def async_setup_entry(
@@ -29,6 +29,7 @@ async def async_setup_entry(
             TargetKWhNumber(coordinator, entry),
             BatteryCapacityNumber(coordinator, entry),
             OverrideCurrentNumber(coordinator, entry),
+            PriceCapNumber(coordinator, entry),
         ]
     )
 
@@ -156,6 +157,32 @@ class BatteryCapacityNumber(CoordinatorEntity, NumberEntity):
         if self._coordinator.adhoc_vehicle_active and self._coordinator.active_vehicle:
             self._coordinator.active_vehicle["capacity_kwh"] = value
         self._coordinator.async_set_updated_data(self._coordinator.ocpp.state)
+
+
+class PriceCapNumber(CoordinatorEntity, NumberEntity):
+    """Price cap for Smart charging (öre/kWh). 0 = disabled."""
+
+    def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._coordinator = coordinator
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_{NUMBER_PRICE_CAP}"
+        self._attr_name = "Price Cap"
+        self._attr_device_info = _device_info(entry)
+        self._attr_has_entity_name = True
+        self._attr_native_min_value = 0.0
+        self._attr_native_max_value = 500.0
+        self._attr_native_step = 1.0
+        self._attr_native_unit_of_measurement = "öre/kWh"
+        self._attr_icon = "mdi:cash-lock"
+        self._attr_mode = NumberMode.BOX
+
+    @property
+    def native_value(self) -> float:
+        return self._coordinator.price_cap_ore_kwh
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._coordinator.set_price_cap(value)
 
 
 class OverrideCurrentNumber(CoordinatorEntity, NumberEntity):

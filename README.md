@@ -39,6 +39,10 @@ En Home Assistant custom component som fungerar som OCPP 1.6 Central System. Lad
 | **Smart (price-optimised)** | Laddar under de billigaste timmarna, klart till deadline (standard 06:00) |
 | **Scheduled** | Laddar inom ett konfigurerat tidsintervall |
 
+I Smart-läget kan du även sätta ett **Price Cap** (öre/kWh): är taket > 0 laddas i stället
+*varje* 15-minutersintervall vars spotpris är under taket (fortfarande med deadline,
+dag/natt-schema och SOC-mål som gränser). Sätt till 0 för vanlig billigaste-timmar-planering.
+
 ## Planeringsalgoritmer
 
 | Algoritm | Beskrivning |
@@ -70,6 +74,7 @@ En Home Assistant custom component som fungerar som OCPP 1.6 Central System. Lad
 | Chargeable Amount | Andel av laddmålet som kan uppnås (%) |
 | Planner Savings | Skillnad i kostnad mellan Greedy och Contiguous (SEK) |
 | Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
+| Price Cap Status | Antal intervall under pristaket + förväntad energi/kostnad (Price Cap-läget) |
 
 ## Binära sensorer
 
@@ -93,6 +98,7 @@ En Home Assistant custom component som fungerar som OCPP 1.6 Central System. Lad
 - **Target Energy** – Hur mycket du vill ladda (kWh, 0 = obegränsat)
 - **Battery Capacity** – Batterikapacitet för beräkningar
 - **Override Current** – Manuell strömgräns vid schema-override
+- **Price Cap** – Pristak i öre/kWh för Smart-läget (0 = av, ladda alla intervall under taket)
 
 ## Notiser
 

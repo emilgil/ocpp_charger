@@ -43,6 +43,7 @@ from .const import (
     SENSOR_STATUS,
     SENSOR_TOTAL_COST,
     SENSOR_CHARGE_WINDOWS,
+    SENSOR_PRICE_CAP_STATUS,
 )
 
 
@@ -77,6 +78,7 @@ async def async_setup_entry(
         PlannerSavingsSensor(coordinator, entry),
         TotalChargingCostSensor(coordinator, entry),
         ChargeWindowsSensor(coordinator, entry),
+        PriceCapStatusSensor(coordinator, entry),
     ]
     async_add_entities(entities)
 
@@ -641,3 +643,50 @@ class ChargeWindowsSensor(OCPPSensorBase):
         if not meta:
             return {"slots": []}
         return {**meta, "slots": slots}
+
+
+class PriceCapStatusSensor(OCPPSensorBase):
+    """Feature 5: status for price-cap charging mode.
+
+    native_value: number of slots at or below the cap (0 when inactive).
+    Attributes: active, cap_ore_kwh, slots_count, expected_kwh, expected_cost_sek.
+    """
+
+    def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, SENSOR_PRICE_CAP_STATUS, "Price Cap Status")
+        self._attr_icon = "mdi:cash-lock-open"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = "slots"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> int:
+        return len(self._coord._price_cap_intervals)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        coord = self._coord
+        cap = coord.price_cap_ore_kwh
+        raw_slots = coord._price_cap_raw_slots
+        active = cap > 0
+
+        if not active or not raw_slots:
+            return {
+                "active": active,
+                "cap_ore_kwh": cap,
+                "slots_count": 0,
+                "expected_kwh": 0.0,
+                "expected_cost_sek": 0.0,
+            }
+
+        expected_kwh = round(sum(s["energy_kwh"] for s in raw_slots), 2)
+        expected_cost = round(
+            sum(s["price_kwh"] * s["energy_kwh"] for s in raw_slots), 2
+        )
+        return {
+            "active": True,
+            "cap_ore_kwh": cap,
+            "slots_count": len(coord._price_cap_intervals),
+            "expected_kwh": expected_kwh,
+            "expected_cost_sek": expected_cost,
+        }
