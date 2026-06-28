@@ -355,14 +355,22 @@ class PlannedChargeStartSensor(OCPPSensorBase):
 
     @property
     def native_value(self) -> str | None:
-        plan = self._coord.charge_plan
-        if not plan or not plan.feasible or not plan.start:
-            return None
+        # Bug 34: once charging has actually started, freeze to the real start
+        # time. Before that, keep showing the planned upcoming start (plan.start)
+        # so the sensor still answers "when will charging begin?" while waiting.
+        started_at = self._coord._charging_started_at
+        if started_at is not None:
+            target = started_at
+        else:
+            plan = self._coord.charge_plan
+            if not plan or not plan.feasible or not plan.start:
+                return None
+            target = plan.start
         try:
             local_tz = zoneinfo.ZoneInfo(self._coord.hass.config.time_zone)
         except Exception:
             local_tz = timezone.utc
-        return plan.start.astimezone(local_tz).strftime("%H:%M")
+        return target.astimezone(local_tz).strftime("%H:%M")
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -398,14 +406,16 @@ class PlannedChargeEndSensor(OCPPSensorBase):
 
     @property
     def native_value(self) -> str | None:
-        plan = self._coord.charge_plan
-        if not plan or not plan.feasible or not plan.end:
+        # Bug 34: show the live ETA (same source as ChargerETASensor) instead of
+        # plan.end, which shrinks ~5 min per recalculation during a session.
+        eta = self._coord.estimated_completion
+        if eta is None:
             return None
         try:
             local_tz = zoneinfo.ZoneInfo(self._coord.hass.config.time_zone)
         except Exception:
             local_tz = timezone.utc
-        return plan.end.astimezone(local_tz).strftime("%H:%M")
+        return eta.astimezone(local_tz).strftime("%H:%M")
 
     @property
     def extra_state_attributes(self) -> dict:

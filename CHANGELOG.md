@@ -1,5 +1,31 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-27: Bug 34 – `planned_charge_start`/`planned_charge_end` drev under laddning
+
+**Symptom:** `planned_charge_end` sjönk ~5 min var 5:e minut under en pågående session (visade
+restplanens längd, inte "när är bilen klar?"). `planned_charge_start` rörde sig på samma sätt eftersom
+den läste löpande `plan.start` (billigaste *återstående* start), som räknas om mid-charge (Bug 16).
+
+**Åtgärd:**
+- **`planned_charge_start`:** Visar fortfarande planerad kommande start (`plan.start`) *innan* laddning
+  påbörjats, men **fryses** till den faktiska starttiden (`_charging_started_at`) när laddningen börjar
+  (`power_w > 100`), och nollställs vid kabelurkoppling (`Available`). Drar alltså inte längre iväg
+  mitt i en session.
+- **`planned_charge_end`:** Visar nu `estimated_completion` – samma ETA-källa som `ChargerETASensor` –
+  istället för `plan.end`. Rör sig naturligt i takt med faktisk laddning istället för att krympa med
+  exakt 5 min per omräkning.
+
+Ingen ändring i laddstyrningslogiken (auto-start, auto-stop, planberäkning oförändrade);
+`extra_state_attributes` på båda sensorerna oförändrade.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | Ny instansvariabel `_charging_started_at`; frys vid laddstart i `_check_notify_events()`; nollställ vid `Available` |
+| `sensor.py` | `PlannedChargeStartSensor.native_value` (fryst start ELLER `plan.start`); `PlannedChargeEndSensor.native_value` (`estimated_completion`) |
+
+**Verifiering:** Båda filer byte-kompilerar; deploy till testinstans utan fel; live-session bekräftade
+att integrationen laddar och fryskoden körs felfritt vid laddstart.
+
 ## 2026-06-23: Feature 6 – Deadline via `input_datetime`-helper (ersätter ManualDeadlineText)
 
 **Funktion:** Den manuella laddningsdeadlinen sätts nu via HA-helpern
