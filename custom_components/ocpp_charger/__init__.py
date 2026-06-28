@@ -391,6 +391,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._notify_on_start:   bool = self.config.get(CONF_NOTIFY_ON_START, True)
         self._notify_on_stop:    bool = self.config.get(CONF_NOTIFY_ON_STOP, True)
         self._was_charging: bool = False
+        self._charging_started_at: datetime | None = None  # Bug 34: fryst laddstartstid för PlannedChargeStartSensor
         # Bug 28: plan windows frozen at session start; None = no active frozen session.
         # An active session is gated by this list, not by a plan recalculated mid-charge.
         self._session_plan_intervals: list[tuple[datetime, datetime]] | None = None
@@ -1537,6 +1538,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         # ── Reset _was_charging when cable is disconnected ───────────────
         if status == "Available":
             self._was_charging = False
+            self._charging_started_at = None  # Bug 34: nollställ fryst starttid vid urkoppling
             self._session_plan_intervals = None  # Bug 28: clear frozen plan on cable disconnect
             self._session_total_kwh = 0.0  # Fix 7: reset accumulated energy
             self._cable_session_notified_connect = False  # Fix 9: reset connect-notif flag
@@ -1568,8 +1570,18 @@ class OCPPCoordinator(DataUpdateCoordinator):
             and self._last_connector_status_notify != "Preparing"
             and not self._cable_was_available
         ):
+            # Bug 33 / Fix 7: a Garo 15-min internal reset ends one transaction and
+            # starts another within the same cable session. Save the just-completed
+            # sub-session's energy before the new StartTransaction resets
+            # state.energy_kwh to 0, so the SOC estimate doesn't lose it. Edge-
+            # triggered (_last_connector_status_notify != "Preparing") → fires once
+            # per reset, and energy_kwh here is current-session data (not the cross-
+            # session stale value that plagued the genuine-connect branch).
+            self._session_total_kwh += self.ocpp.state.energy_kwh
             _LOGGER.debug(
-                "[Bug13A] Preparing utan föregående Available – Garo-reset, skippar Inkopplad-notis"
+                "[Bug13A] Preparing utan föregående Available – Garo-reset, skippar "
+                "Inkopplad-notis (sparar %.3f kWh, _session_total_kwh=%.3f)",
+                self.ocpp.state.energy_kwh, self._session_total_kwh,
             )
 
         if (
@@ -1596,8 +1608,14 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._start_notified_this_connection = False  # Bug 2: reset for new connection
             self._charging_seen_this_session = False  # Bug 10: reset for new connection
             self._notified_start_session = None  # allow new start-notif for coming session
-            # Reset cost tracking for new session at cable connect
-            self._session_total_kwh += self.ocpp.state.energy_kwh  # Fix 7: save previous sub-session energy
+            # Reset cost tracking for new session at cable connect.
+            # Bug 33: a genuine connect always starts fresh. The old `+=` captured
+            # state.energy_kwh, which is NOT reset on disconnect and thus held a
+            # stale positive value from the previous vehicle's session → a bogus
+            # already_charged_kwh → _charging_goal_reached() estimated >100% →
+            # auto-start was suppressed ("mål redan nått"). The accumulation that
+            # Fix 7 intended belongs in the Garo-reset branch (see above), not here.
+            self._session_total_kwh = 0.0  # Bug 33: genuine connect starts fresh
             self.ocpp.state.accumulated_cost = 0.0
             self._last_cost_energy_kwh = 0.0
             # Bug 6: Reset cable session accumulators
@@ -1635,6 +1653,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             and state.power_w > 100
         ):
             self._cable_session_start_notified = True
+            self._charging_started_at = datetime.now(timezone.utc)  # Bug 34: frys starttid när laddning börjar
             self._notified_start_session = state.session_id
             self._start_notified_this_connection = True
             self._charging_seen_this_session = True  # Bug 10: mark that we saw charging start

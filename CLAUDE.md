@@ -155,6 +155,7 @@ _session_total_kwh: float                 # Fix 7: ackumulerad energi sedan kabe
 _suspended_ev_since: datetime | None      # SuspendedEV-detektion
 _cable_connect_time: datetime | None      # Fix 10: tid för kabelinkoppling
 _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
+_charging_started_at: datetime | None     # Bug 34: fryst faktisk laddstartstid för PlannedChargeStartSensor (None innan start/efter urkoppling)
 _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
 _day_charging_dismissed: bool             # Bug 3/21: användaren tryckt "🚫 Avsluta"
 _day_charging_dismissed_until: datetime | None  # Bug 21: nollställs vid lokal midnatt
@@ -186,8 +187,8 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Session ID | Unik per session |
 | Session Start | Timestamp |
 | Charging Period | Day/Night/Override |
-| Planned Charge Start | HH:MM lokal tid |
-| Planned Charge End | HH:MM lokal tid |
+| Planned Charge Start | HH:MM lokal tid. Planerad kommande start innan laddning; fryses till faktisk starttid när laddning börjar (Bug 34) |
+| Planned Charge End | HH:MM lokal tid. Speglar `estimated_completion` (ETA), inte `plan.end` (Bug 34) |
 | Estimated Charge Cost | SEK från laddplan |
 | Charge Goal Achievable | True/False |
 | Chargeable Amount | % av laddmål som kan uppnås |

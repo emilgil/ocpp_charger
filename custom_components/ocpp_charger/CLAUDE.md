@@ -116,8 +116,8 @@ num_phases: int                      # 3
 | Session ID | Unik per session |
 | Session Start | Timestamp |
 | Schedule Period | Day/Night |
-| Planned Charge Start | HH:MM lokal tid |
-| Planned Charge End | HH:MM lokal tid |
+| Planned Charge Start | HH:MM lokal tid. Planerad kommande start; fryses till faktisk starttid när laddning börjar (Bug 34) |
+| Planned Charge End | HH:MM lokal tid. Speglar `estimated_completion` (ETA), inte `plan.end` (Bug 34) |
 | Estimated Charge Cost | SEK från laddplan |
 | Session Cost | Upplupen faktisk kostnad SEK |
 | Charge Goal Achievable | True/False |
