@@ -671,7 +671,7 @@ class PriceCapStatusSensor(OCPPSensorBase):
 
     @property
     def native_value(self) -> int:
-        return len(self._coord._price_cap_intervals)
+        return len(self._coord._price_cap_raw_slots)
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -687,6 +687,7 @@ class PriceCapStatusSensor(OCPPSensorBase):
                 "slots_count": 0,
                 "expected_kwh": 0.0,
                 "expected_cost_sek": 0.0,
+                "slots": [],
             }
 
         expected_kwh = round(sum(s["energy_kwh"] for s in raw_slots), 2)
@@ -696,7 +697,15 @@ class PriceCapStatusSensor(OCPPSensorBase):
         return {
             "active": True,
             "cap_ore_kwh": cap,
-            "slots_count": len(coord._price_cap_intervals),
+            "slots_count": len(raw_slots),
             "expected_kwh": expected_kwh,
             "expected_cost_sek": expected_cost,
+            "slots": [
+                {
+                    "time": s["time"].isoformat(),
+                    "price_ore_kwh": round(s["price_kwh"] * 100, 2),
+                    "cost_sek": round(s["price_kwh"] * s["energy_kwh"], 4),
+                }
+                for s in raw_slots
+            ],
         }

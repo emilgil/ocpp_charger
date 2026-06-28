@@ -1,5 +1,30 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-28: Bug 35 – `PriceCapStatusSensor` räknade merged-block istället för råslotar
+
+**Symptom:** `sensor.*_price_cap_status` visade `state`/`slots_count` = **5** (antalet sammanslagna
+kontinuerliga block) medan loggen visade att **109** 15-minutersslotar kvalificerade sig. `expected_kwh`
+och `expected_cost_sek` var korrekta (de summeras alltid över råslotarna), men antalet var fel och en
+`slots`-lista saknades helt – omöjligt att se *vilka* slotar som kvalificerade.
+
+**Rotorsak:** Sensorn använde `len(coord._price_cap_intervals)` (merged-block från `_merge_intervals()`)
+på två ställen. Rätt mått är `len(coord._price_cap_raw_slots)` (råa 15-minutersslotar).
+
+**Åtgärd (`sensor.py`, `PriceCapStatusSensor`):**
+- `native_value` och `slots_count` använder nu `_price_cap_raw_slots`.
+- Nytt `slots`-attribut: per slot `time` (ISO), `price_ore_kwh` och `cost_sek` (`price_kwh × energy_kwh`).
+- Tom-grenen returnerar `slots: []` för konsekvens.
+
+Ingen ändring i laddstyrning eller planeringslogik – endast diagnostiksensorns rapportering.
+
+| Fil | Ändring |
+|-----|---------|
+| `sensor.py` | `PriceCapStatusSensor.native_value` + `extra_state_attributes` (`slots_count`, ny `slots`-lista) |
+
+**Verifiering:** `sensor.py` byte-kompilerar; `tests/test_price_cap.py` 11/11 (datastruktur-baslinjen);
+deploy till testinstans utan fel; live-logg `[PriceCap] 107 slots ≤ 100 öre/kWh` bekräftar att sensorn
+nu speglar antalet råslotar.
+
 ## 2026-06-27: Bug 34 – `planned_charge_start`/`planned_charge_end` drev under laddning
 
 **Symptom:** `planned_charge_end` sjönk ~5 min var 5:e minut under en pågående session (visade

@@ -195,7 +195,7 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Planner Savings | SEK skillnad mellan Greedy och Contiguous |
 | Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
 | Charge Windows | Diagnostisk: laddplanens slots med planerad + faktisk energi (Feature 3) |
-| Price Cap Status | Diagnostisk: antal slots ≤ pristaket + expected_kwh/expected_cost_sek (Feature 5) |
+| Price Cap Status | Diagnostisk: antal råslots ≤ pristaket (`len(_price_cap_raw_slots)`, Bug 35) + expected_kwh/expected_cost_sek + `slots`-lista (time/price_ore_kwh/cost_sek) (Feature 5) |
 
 ### Binära sensorer (3 st)
 | Sensor | Beskrivning |
