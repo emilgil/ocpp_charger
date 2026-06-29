@@ -83,7 +83,7 @@ Helpern nollställs automatiskt till `00:00` när kabeln kopplas ur.
 | Chargeable Amount | Andel av laddmålet som kan uppnås (%) |
 | Planner Savings | Skillnad i kostnad mellan Greedy och Contiguous (SEK) |
 | Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
-| Price Cap Status | Antal 15-minutersslotar under pristaket + förväntad energi/kostnad samt `slots`-lista (Price Cap-läget) |
+| Price Cap Status | Antal 15-minutersslotar under pristaket (cappat vid återstående SoC-behov) + förväntad energi/kostnad samt `slots`-lista (Price Cap-läget) |
 
 ## Binära sensorer
 

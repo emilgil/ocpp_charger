@@ -1,5 +1,33 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-29: Bug 35b – `PriceCapStatusSensor` cappar nu estimat vid SoC-behov
+
+**Symptom:** Efter Bug 35 visade sensorn rätt antal råslotar, men `expected_kwh`/`expected_cost_sek`
+summerades fortfarande över **alla** kvalificerande slotar utan hänsyn till SoC-målet – t.ex. 176 kWh
+för ett 64/77 kWh-batteri, vilket är orimligt.
+
+**Åtgärd (`sensor.py`, `PriceCapStatusSensor`):**
+- Ny hjälpmetod `_capped_raw_slots()` – gemensam källa för `native_value` och attributen så att
+  `state` och `slots_count` alltid är överens. Tar kvalificerande slotar (kronologiskt) tills
+  ackumulerad AC-energi når återstående behov:
+  `(target_soc − current_soc) / 100 × capacity / DEFAULT_CHARGE_EFFICIENCY`.
+- `state`, `slots_count`, `expected_kwh`, `expected_cost_sek` och `slots`-listan speglar nu det
+  cappade urvalet.
+- Okänd SoC (`soc_percent is None`) → ingen cappning (oförändrat beteende, alla slotar visas).
+
+**Designval:** `state` cappas (inte bara attributen) så att sensorns badge speglar realistiskt antal.
+Helt-slot-ackumulering: den slot som passerar behovet tas med i sin helhet (så `expected_kwh` kan
+överstiga behovet med upp till en slot). Känd begränsning: vid `current_soc ≥ target_soc` (redan vid
+mål) faller koden i icke-cappa-grenen och visar alla slotar – ev. framtida Bug 35c.
+
+| Fil | Ändring |
+|-----|---------|
+| `sensor.py` | Ny `_capped_raw_slots()`; `native_value` + `extra_state_attributes` använder den; `DEFAULT_CHARGE_EFFICIENCY` importerad på toppnivå |
+
+**Verifiering:** `sensor.py` byte-kompilerar; `tests/test_price_cap.py` 11/11; cappnings-aritmetiken
+verifierad fristående (75→80 %, 64 kWh → behov 3.48 kWh → 2 slotar / 5.52 kWh); deploy till testinstans
+utan setup-fel.
+
 ## 2026-06-28: Bug 35 – `PriceCapStatusSensor` räknade merged-block istället för råslotar
 
 **Symptom:** `sensor.*_price_cap_status` visade `state`/`slots_count` = **5** (antalet sammanslagna

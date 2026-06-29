@@ -30,6 +30,7 @@ from .const import (
     CONF_CHARGER_ID,
     CONF_HOST,
     CONF_PORT,
+    DEFAULT_CHARGE_EFFICIENCY,
     DOMAIN,
     SENSOR_CABLE,
     SENSOR_CURRENT,
@@ -669,18 +670,57 @@ class PriceCapStatusSensor(OCPPSensorBase):
         self._attr_native_unit_of_measurement = "slots"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
+    def _capped_raw_slots(self) -> list[dict]:
+        """Qualifying raw slots capped at the remaining SoC energy need (Bug 35b).
+
+        Shared source of truth for native_value and the attributes so that
+        ``state`` and ``slots_count`` always agree. raw_slots carry AC-side
+        energy (power × time), so the battery need is divided by the charge
+        efficiency to compare apples to apples. raw_slots are already
+        chronologically sorted (price_cap.py). Returns [] when the price cap
+        is inactive or no slots qualify.
+        """
+        coord = self._coord
+        raw_slots = coord._price_cap_raw_slots
+        if coord.price_cap_ore_kwh <= 0 or not raw_slots:
+            return []
+
+        current_soc = coord.ocpp.state.soc_percent
+        target_soc = coord.target_soc
+        capacity = coord.battery_capacity_kwh
+        if (
+            current_soc is not None
+            and target_soc > 0
+            and capacity > 0
+            and target_soc > current_soc
+        ):
+            energy_needed_kwh = (
+                (target_soc - current_soc) / 100.0 * capacity / DEFAULT_CHARGE_EFFICIENCY
+            )
+        else:
+            energy_needed_kwh = None  # unknown SoC – do not cap
+
+        out: list[dict] = []
+        accumulated_kwh = 0.0
+        for s in raw_slots:
+            if energy_needed_kwh is not None and accumulated_kwh >= energy_needed_kwh:
+                break
+            out.append(s)
+            accumulated_kwh += s["energy_kwh"]
+        return out
+
     @property
     def native_value(self) -> int:
-        return len(self._coord._price_cap_raw_slots)
+        return len(self._capped_raw_slots())
 
     @property
     def extra_state_attributes(self) -> dict:
         coord = self._coord
         cap = coord.price_cap_ore_kwh
-        raw_slots = coord._price_cap_raw_slots
         active = cap > 0
 
-        if not active or not raw_slots:
+        capped = self._capped_raw_slots()
+        if not active or not capped:
             return {
                 "active": active,
                 "cap_ore_kwh": cap,
@@ -690,14 +730,14 @@ class PriceCapStatusSensor(OCPPSensorBase):
                 "slots": [],
             }
 
-        expected_kwh = round(sum(s["energy_kwh"] for s in raw_slots), 2)
+        expected_kwh = round(sum(s["energy_kwh"] for s in capped), 2)
         expected_cost = round(
-            sum(s["price_kwh"] * s["energy_kwh"] for s in raw_slots), 2
+            sum(s["price_kwh"] * s["energy_kwh"] for s in capped), 2
         )
         return {
             "active": True,
             "cap_ore_kwh": cap,
-            "slots_count": len(raw_slots),
+            "slots_count": len(capped),
             "expected_kwh": expected_kwh,
             "expected_cost_sek": expected_cost,
             "slots": [
@@ -706,6 +746,6 @@ class PriceCapStatusSensor(OCPPSensorBase):
                     "price_ore_kwh": round(s["price_kwh"] * 100, 2),
                     "cost_sek": round(s["price_kwh"] * s["energy_kwh"], 4),
                 }
-                for s in raw_slots
+                for s in capped
             ],
         }
