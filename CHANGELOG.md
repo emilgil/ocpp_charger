@@ -18,9 +18,12 @@ entity_id `binary_sensor.<device>_price_cap_active`, vilket matchar dashboard-ex
 `price_cap_active`; engelska namnet löser motstridigheten.
 
 **Driftnot:** En första deploy skapade entiteten med svenskt namn → entity_id `..._pristak_aktivt`.
-Eftersom entity_id är "sticky" måste den föräldralösa entiteten raderas manuellt i HA
-(Inställningar → Entiteter), varefter den återskapas som `..._price_cap_active` (jämför Feature 6:s
-föräldralösa `text`-entitet).
+entity_id är "sticky" och kan inte raderas (Radera-knappen är gråad så länge integrationen aktivt
+tillhandahåller entiteten – radering kräver att entiteten är *unavailable/restored*). Byt i stället
+entity_id direkt i HA: Inställningar → Enheter & tjänster → Entiteter → "Price Cap Active" → ⚙
+(inställningar) → fältet **Entity ID** → ändra suffixet till `price_cap_active` → Uppdatera
+(ingen omstart krävs). Alternativt: entity_id är bara en kosmetisk etikett – dashboarden kan lika
+gärna referera `..._pristak_aktivt` direkt.
 
 **Verifiering:** `binary_sensor.py` + `const.py` byte-kompilerar; deploy till testinstans utan
 setup-fel; entiteten registrerad och synlig i entity registry.
