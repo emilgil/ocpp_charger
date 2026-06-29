@@ -14,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import OCPPCoordinator
-from .const import CONF_CHARGER_ID, DOMAIN
+from .const import BINARY_SENSOR_PRICE_CAP_ACTIVE, CONF_CHARGER_ID, DOMAIN
 
 
 async def async_setup_entry(
@@ -29,6 +29,7 @@ async def async_setup_entry(
             CableConnectedBinarySensor(coordinator, entry),
             ChargingActiveBinarySensor(coordinator, entry),
             ChargerOnlineBinarySensor(coordinator, entry),
+            PriceCapActiveBinarySensor(coordinator, entry),
         ]
     )
 
@@ -98,3 +99,24 @@ class ChargerOnlineBinarySensor(OCPPBinarySensorBase):
     @property
     def is_on(self) -> bool:
         return self._coord.ocpp.state.connected
+
+
+class PriceCapActiveBinarySensor(OCPPBinarySensorBase):
+    """True when price-cap mode is configured (cap > 0 öre/kWh).
+
+    Feature 7: reflects configuration, not whether any slot currently
+    qualifies — an empty market still leaves the mode active.
+    """
+
+    def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            BINARY_SENSOR_PRICE_CAP_ACTIVE,
+            "Price Cap Active",
+        )
+        self._attr_icon = "mdi:cash-lock"
+
+    @property
+    def is_on(self) -> bool:
+        return self._coord.price_cap_ore_kwh > 0

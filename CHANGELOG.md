@@ -1,5 +1,30 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-29: Feature 7 – `binary_sensor` Price Cap Active
+
+**Funktion:** Ny `PriceCapActiveBinarySensor` som är `on` när pristaksläget är konfigurerat
+(`price_cap_ore_kwh > 0`), annars `off`. Reflekterar *konfiguration*, inte om några slots
+kvalificerar just nu – en marknad som inte möter taket gör inte sensorn `off`. Möjliggör en
+`conditional`-rad i Lovelace utan extern template-helper.
+
+| Fil | Ändring |
+|-----|---------|
+| `const.py` | Ny konstant `BINARY_SENSOR_PRICE_CAP_ACTIVE = "price_cap_active"` |
+| `binary_sensor.py` | Ny klass `PriceCapActiveBinarySensor` (`is_on = price_cap_ore_kwh > 0`); registrerad i `async_setup_entry` |
+
+**Namnval:** Display-namn `"Price Cap Active"` (engelska, konsekvent med övriga binärsensorer) →
+entity_id `binary_sensor.<device>_price_cap_active`, vilket matchar dashboard-exemplet. Spec
+(feature7.md) föreslog ursprungligen svenska `"Pristak aktivt"` men dess egen dashboard-YAML antog
+`price_cap_active`; engelska namnet löser motstridigheten.
+
+**Driftnot:** En första deploy skapade entiteten med svenskt namn → entity_id `..._pristak_aktivt`.
+Eftersom entity_id är "sticky" måste den föräldralösa entiteten raderas manuellt i HA
+(Inställningar → Entiteter), varefter den återskapas som `..._price_cap_active` (jämför Feature 6:s
+föräldralösa `text`-entitet).
+
+**Verifiering:** `binary_sensor.py` + `const.py` byte-kompilerar; deploy till testinstans utan
+setup-fel; entiteten registrerad och synlig i entity registry.
+
 ## 2026-06-29: Bug 35b – `PriceCapStatusSensor` cappar nu estimat vid SoC-behov
 
 **Symptom:** Efter Bug 35 visade sensorn rätt antal råslotar, men `expected_kwh`/`expected_cost_sek`

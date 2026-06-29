@@ -92,6 +92,7 @@ Helpern nollställs automatiskt till `00:00` när kabeln kopplas ur.
 | Cable Connected | Kabel inkopplad |
 | Charging | Aktivt laddande |
 | Charger Connected | OCPP WebSocket ansluten |
+| Price Cap Active | Pristaksläget konfigurerat (`price_cap_ore_kwh > 0`) – på även när inga slots möter taket just nu |
 
 ## Knappar och kontroller
 
