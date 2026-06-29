@@ -339,6 +339,15 @@ grenen ligger efter throttle/goal-reached/RemoteStart-frysningskollarna, så de 
 Feature 4:s manuella deadline. Auto-start fryser `plan.active_intervals` i `_session_plan_intervals`
 (Bug 28) även för pristaksplanen.
 
+**Bug 35c:** `_update_price_cap_plan()` sätter `charge_plan.energy_kwh`/`estimated_cost_sek` till
+**SoC-cappade** värden (slots ackumuleras kronologiskt tills återstående batteribehov
+`(target_soc−current_soc)/100×capacity/eff` nås) – inte `result.total_kwh` (alla kvalificerande slots).
+Tidigare visade `PlannedChargeEnergySensor`/`EstimatedChargeCostSensor` hela marknaden under taket
+(t.ex. 38.64 kWh för ett behov på ~21 kWh). `intervals`-listan behåller **alla** slots (det körda
+schemat); bara energi/kostnad cappas. Okänd SoC (`None`) eller `current_soc ≥ target_soc` → ingen
+cappning (samma semantik som Bug 35b:s `_capped_raw_slots`). Helt-slot-ackumulering → kan överstiga
+behovet med ≤1 slot.
+
 ## Persistens (Store)
 `self._store` (HA Storage) sparar bl.a. `cable_connected`, `transaction_id`, `energy_kwh`,
 `price_cap_ore_kwh` (Feature 5),

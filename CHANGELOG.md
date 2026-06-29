@@ -1,5 +1,34 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-06-29: Bug 35c – `_update_price_cap_plan` cappar `charge_plan` mot SoC-behov
+
+**Symptom:** `PlannedChargeEnergySensor` visade 38.64 kWh och `EstimatedChargeCostSensor`
+motsvarande kostnad i pristaksläget, trots att fordonet (Skoda Enyaq, SoC 75→100 %, 77 kWh) bara
+behövde ~21 kWh. `_update_price_cap_plan` skrev `charge_plan.energy_kwh = result.total_kwh` – summan
+av **alla** kvalificerande slots utan SoC-cappning – och båda sensorerna läser från `charge_plan`.
+
+**Åtgärd (`__init__.py`, `_update_price_cap_plan`):**
+- `energy_kwh`/`estimated_cost_sek` sätts nu till SoC-cappade värden: slots ackumuleras kronologiskt
+  tills återstående behov `(target_soc−current_soc)/100×capacity/DEFAULT_CHARGE_EFFICIENCY` nås.
+- `end` blir sista cappade slotens sluttid.
+- `intervals`-listan behåller **alla** slots (det faktiska laddschemat); endast energi/kostnad cappas.
+- Okänd SoC (`None`) eller `current_soc ≥ target_soc` → ingen cappning (samma semantik som Bug 35b).
+- `[PriceCap]`-loggen visar nu både kvalificerande total och cappat värde.
+
+**Designval:** Helt-slot-ackumulering (sloten som passerar behovet tas med helt → `energy_kwh` kan
+överstiga behovet med ≤1 slot, t.ex. 22.08 kWh för ett behov på 20.92 kWh). Konsekvent med Bug 35b.
+Ingen påverkan på laddstyrningen (`_charging_goal_reached` är icke-cirkulär sedan Bug 29);
+`ChargeableAmountSensor` ger fortsatt 100 % när målet är nåbart och visar bristen annars.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_update_price_cap_plan`: SoC-cappad `energy_kwh`/`estimated_cost_sek` + `end`; utökad `[PriceCap]`-logg |
+
+**Verifiering:** `__init__.py` byte-kompilerar; `tests/test_price_cap.py` 11/11; cappnings-aritmetiken
+verifierad fristående (75→100 %, 77 kWh → behov 20.92 kWh → 8/14 slots / 22.08 kWh); deploy till
+testinstans utan setup-fel; ny logg-format bekräftad live (startade med `soc=None` efter fordonsbyte →
+korrekt ingen cappning vid det tillfället).
+
 ## 2026-06-29: Feature 7 – `binary_sensor` Price Cap Active
 
 **Funktion:** Ny `PriceCapActiveBinarySensor` som är `on` när pristaksläget är konfigurerat

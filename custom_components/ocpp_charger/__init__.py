@@ -2140,8 +2140,43 @@ class OCPPCoordinator(DataUpdateCoordinator):
         deadline_hhmm = deadline_local.astimezone(local_tz).strftime("%H:%M")
         if result.feasible:
             slots = result.qualifying_slots
+
+            # Bug 35c: cap energy_kwh/estimated_cost_sek against the remaining
+            # battery need so PlannedChargeEnergy/EstimatedChargeCost reflect
+            # what will actually be charged, not the whole qualifying market.
+            # slots carry AC-side energy, so divide the battery need by the
+            # charge efficiency. None (unknown SoC, or already at target) =>
+            # no capping, same as before.
+            current_soc = self.ocpp.state.soc_percent
+            target_soc = self.target_soc
+            capacity = self.battery_capacity_kwh
+            if (
+                current_soc is not None
+                and target_soc > 0
+                and capacity > 0
+                and target_soc > current_soc
+            ):
+                energy_needed_kwh = (
+                    (target_soc - current_soc) / 100.0 * capacity / DEFAULT_CHARGE_EFFICIENCY
+                )
+            else:
+                energy_needed_kwh = None
+
+            capped_kwh = 0.0
+            capped_cost = 0.0
+            capped_slots = []
+            for s in slots:
+                if energy_needed_kwh is not None and capped_kwh >= energy_needed_kwh:
+                    break
+                capped_kwh += s["energy_kwh"]
+                capped_cost += s["price_kwh"] * s["energy_kwh"]
+                capped_slots.append(s)
+
             first_t = slots[0]["time"]
-            last_t = slots[-1]["time"] + timedelta(minutes=INTERVAL_MINUTES)
+            if capped_slots:
+                last_t = capped_slots[-1]["time"] + timedelta(minutes=INTERVAL_MINUTES)
+            else:
+                last_t = slots[-1]["time"] + timedelta(minutes=INTERVAL_MINUTES)
             active_minutes = sum(
                 int((e - s).total_seconds() / 60) for s, e in result.active_intervals
             )
@@ -2149,8 +2184,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 start=first_t,
                 end=last_t,
                 duration_minutes=active_minutes,
-                energy_kwh=round(result.total_kwh, 2),
-                estimated_cost_sek=round(result.total_cost_sek, 2),
+                energy_kwh=round(capped_kwh, 2),
+                estimated_cost_sek=round(capped_cost, 2),
                 avg_price_ore_kwh=round(result.avg_price_ore_kwh, 1),
                 intervals=[
                     {
@@ -2159,7 +2194,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         "power_kw": round(s["energy_kwh"] / INTERVAL_HOURS, 2),
                         "energy_kwh": round(s["energy_kwh"], 4),
                     }
-                    for s in slots
+                    for s in slots  # keep all slots in the schedule list
                 ],
                 active_intervals=result.active_intervals,
                 feasible=True,
@@ -2170,9 +2205,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
             )
             _LOGGER.info(
                 "[PriceCap] %d slots ≤ %.0f öre/kWh → %.2f kWh / %.2f SEK "
-                "(deadline %s, allow_day=%s)",
+                "(cappat mot SoC-mål: %.2f kWh / %.2f SEK, deadline %s, allow_day=%s)",
                 len(slots), self.price_cap_ore_kwh, result.total_kwh,
-                result.total_cost_sek, deadline_hhmm, self.allow_day_charging,
+                result.total_cost_sek, capped_kwh, capped_cost,
+                deadline_hhmm, self.allow_day_charging,
             )
         else:
             self.charge_plan = None
