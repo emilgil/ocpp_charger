@@ -62,6 +62,9 @@ NUMBER_BATTERY_CAPACITY = "battery_capacity"
 NUMBER_PRICE_CAP        = "price_cap_ore_kwh"
 SENSOR_PRICE_CAP_STATUS = "price_cap_status"
 
+# Feature 7: binary sensor indicating price-cap mode is configured (cap > 0)
+BINARY_SENSOR_PRICE_CAP_ACTIVE = "price_cap_active"
+
 # Feature 6: input_datetime helper for the manual charging deadline
 # (replaces the Feature 4 ManualDeadlineText entity). Must be created manually
 # in HA (Settings → Helpers → Time); the integration only reads/resets it.

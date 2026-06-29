@@ -35,7 +35,7 @@ custom_components/ocpp_charger/
   config_flow.py       – Setup flow (4 steg) + options flow
   const.py             – Alla konstanter
   sensor.py            – 23 sensorer
-  binary_sensor.py     – 3 binära sensorer
+  binary_sensor.py     – 4 binära sensorer
   number.py            – 6 number-entiteter
   select.py            – 3 select-entiteter
   switch.py            – 3 switchar
@@ -197,12 +197,13 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Charge Windows | Diagnostisk: laddplanens slots med planerad + faktisk energi (Feature 3) |
 | Price Cap Status | Diagnostisk: antal råslots ≤ pristaket cappat vid återstående SoC-behov (`_capped_raw_slots()`, Bug 35/35b – `state` == `slots_count`) + expected_kwh/expected_cost_sek + `slots`-lista (time/price_ore_kwh/cost_sek) (Feature 5) |
 
-### Binära sensorer (3 st)
+### Binära sensorer (4 st)
 | Sensor | Beskrivning |
 |--------|-------------|
 | Cable Connected | Kabel inkopplad |
 | Charging | Aktivt laddande |
 | Charger Connected | OCPP WebSocket ansluten |
+| Price Cap Active | Feature 7: pristaksläget konfigurerat (`price_cap_ore_kwh > 0`); namn "Price Cap Active" → entity_id `..._price_cap_active`. Indikerar konfiguration, ej om slots kvalificerar just nu |
 
 ### Switchar (3 st)
 | Switch | Beskrivning |
