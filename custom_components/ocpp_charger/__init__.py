@@ -1189,13 +1189,25 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.estimated_remaining_minutes = None
             return
 
-        # Actively charging with measurable power – estimate from current power_w
+        # Actively charging with measurable power – estimate from current power_w.
+        # Bug 36: pass the vehicle's real battery_kwh + charge efficiency (previously
+        # missing, so the function silently fell back to its 64.0 kWh default and no
+        # efficiency correction), and use the Bug-29 corrected SOC estimate so this
+        # can't drift from charge_planner's energy_needed calculation.
+        active_tx_energy = self.ocpp.state.energy_kwh if self.ocpp.state.transaction_id is not None else 0.0
+        already_charged_kwh = self._session_total_kwh + active_tx_energy
+        eta_current_soc = estimate_soc(
+            self._session_start_soc, already_charged_kwh, self.battery_capacity_kwh,
+            DEFAULT_CHARGE_EFFICIENCY, self.ocpp.state.soc_percent,
+        )
         self.estimated_completion = self.smart_controller.estimate_completion_time(
             session_kwh=self.ocpp.state.energy_kwh,
             target_kwh=self.target_kwh if self.target_kwh > 0 else None,
             target_soc=self.target_soc if self.target_soc > 0 else None,
-            current_soc=self.ocpp.state.soc_percent,
+            current_soc=eta_current_soc,
             power_w=self.ocpp.state.power_w,
+            battery_kwh=self.battery_capacity_kwh,
+            efficiency=DEFAULT_CHARGE_EFFICIENCY,
         )
         if self.estimated_completion:
             remaining = self.estimated_completion - datetime.now(timezone.utc)

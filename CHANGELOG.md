@@ -1,5 +1,33 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-07-04: Bug 36 – ETA-beräkningen använde fel batterikapacitet och ingen effektivitetskorrigering
+
+**Symptom:** Under en Skoda Enyaq-laddning (SoC 44→80 %, 4,2 kW) visade `planned_charge_end`/
+Estimated Charge Time Remaining **15:52** (5h29m) medan `charge_plan.end` (korrekt) sa **17:30**.
+`_update_eta()` anropade `estimate_completion_time()` utan `battery_kwh` → tyst fallback till
+64 kWh-defaulten (fel för Enyaqs 77 kWh, råkar stämma för eNiro), och SoC-grenen saknade
+division med `DEFAULT_CHARGE_EFFICIENCY` (0.92). Dessutom skickades rå `soc_percent` istället
+för Bug 29-estimatet: `(80-44)/100×64 = 23.04 kWh` mot korrekta `(80-44)/100×77/0.92 = 30.13 kWh`.
+
+**Åtgärd:**
+- `smart_charge.py` `estimate_completion_time()`: ny parameter `efficiency` (default `1.0` =
+  oförändrat beteende), SoC-grenen delar nu med den så formeln matchar planerarens
+  `energy_needed`. `target_kwh`-grenen oförändrad (redan nätsidans mått).
+- `__init__.py` `_update_eta()`: skickar `battery_kwh=self.battery_capacity_kwh` +
+  `efficiency=DEFAULT_CHARGE_EFFICIENCY`, och `current_soc` = Bug 29-korrigerad
+  `estimate_soc(_session_start_soc + levererad energi)` – samma källa som
+  `_charging_goal_reached()`/planeraren, så ETA:n kan inte divergera från dem.
+
+| Fil | Ändring |
+|-----|---------|
+| `smart_charge.py` | `estimate_completion_time()`: `efficiency`-parameter, SoC-grenen delar med den |
+| `__init__.py` | `_update_eta()`: skickar `battery_kwh`/`efficiency` + Bug 29-SOC-estimat |
+| `tests/test_smart_charge_bug36.py` | Ny fristående testfil (5 tester, stdlib-only) |
+
+**Verifiering:** TDD – testet skrevs först och föll (`unexpected keyword argument 'efficiency'`),
+grönt efter fix; hela sviten (6 testfiler) grön; deploy till testinstans utan fel i loggen.
+Live-ETA:n kan observeras vid nästa aktiva laddsession (ingen laddning pågick vid deploy).
+
 ## 2026-06-29: Bug 35c – `_update_price_cap_plan` cappar `charge_plan` mot SoC-behov
 
 **Symptom:** `PlannedChargeEnergySensor` visade 38.64 kWh och `EstimatedChargeCostSensor`
