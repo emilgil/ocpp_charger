@@ -42,7 +42,7 @@ custom_components/ocpp_charger/
   button.py            – 2 knappar
   vehicle_detection.py – Auto-identifiering av fordon
   current_schedule.py  – Dag/natt-schema
-  smart_charge.py      – Prisbeslut (fallback när ingen plan finns)
+  smart_charge.py      – Prisbeslut (fallback när ingen plan finns) + estimate_completion_time (ETA; tester i tests/test_smart_charge_bug36.py)
   charge_planner.py    – Optimal laddplanering baserat på spotpriser
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
   deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
@@ -181,8 +181,8 @@ planner_algorithm: str                    # "Greedy (cheapest slots)"
 | Session Cost | Upplupen faktisk kostnad SEK |
 | Battery Level | % SOC |
 | Charging Time | Aktiv laddtid i minuter |
-| Estimated Completion | Timestamp när laddningen är klar |
-| Estimated Charge Time Remaining | Återstående tid, format "2 h 15 min" |
+| Estimated Completion | Timestamp när laddningen är klar. Under aktiv laddning: fordonets `battery_capacity_kwh` + `DEFAULT_CHARGE_EFFICIENCY` + Bug 29-SOC-estimat (Bug 36) – matchar planerarens `energy_needed`-formel |
+| Estimated Charge Time Remaining | Återstående tid, format "2 h 15 min" (samma ETA-källa, Bug 36) |
 | Current Electricity Price | öre/kWh |
 | Session ID | Unik per session |
 | Session Start | Timestamp |

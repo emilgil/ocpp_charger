@@ -146,6 +146,7 @@ class SmartChargeController:
         current_soc: Optional[float],
         power_w: float,
         battery_kwh: float = 64.0,
+        efficiency: float = 1.0,
     ) -> Optional[datetime]:
         """Estimate when charging will be complete."""
         if power_w <= 0:
@@ -154,10 +155,13 @@ class SmartChargeController:
         remaining_kwh: Optional[float] = None
 
         if target_kwh is not None and target_kwh > 0:
+            # target_kwh is already a grid-side (AC) measure – no efficiency correction.
             remaining_kwh = max(0.0, target_kwh - session_kwh)
         elif target_soc is not None and current_soc is not None:
             remaining_pct = max(0.0, target_soc - current_soc)
-            remaining_kwh = (remaining_pct / 100.0) * battery_kwh
+            # Bug 36: divide by efficiency so this matches charge_planner's
+            # energy_needed formula (battery-side % → grid-side kWh).
+            remaining_kwh = (remaining_pct / 100.0) * battery_kwh / efficiency
         else:
             return None
 
