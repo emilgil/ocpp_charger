@@ -1,5 +1,28 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-07-06: Bug 37 – Platshållar-URL i deployad manifest.json gav 404 från Options-dialogens ?-länk
+
+**Symptom:** Frågetecknet i integrationens Options-dialog länkade till
+`https://github.com/your-repo/ocpp_charger` (404). Hjälpikonen läser `documentation`-fältet
+i `manifest.json`.
+
+**Rotorsak:** Ren deploy-drift – projektkopian hade redan korrekt URL
+(`emilgil/ocpp_charger`) men den versionen hade aldrig deployats till servern. Ingen
+kodändring i repot behövdes.
+
+**Åtgärd:** `scp` av projektets `manifest.json` till servern (MD5 verifierad identisk,
+`1334ce73…`) + full HA-omstart (manifestet cachas vid uppstart – integration-reload räcker
+inte). Drift-svep av hela komponentkatalogen (md5 på alla `.py`/`.json`/`.yaml` lokalt vs
+server) bekräftade att **endast** `manifest.json` hade driftat.
+
+| Fil | Ändring |
+|-----|---------|
+| *(ingen repo-ändring)* | Endast deploy av redan korrekt `manifest.json` + CHANGELOG-post |
+
+**Verifiering:** Post-deploy grep på servern visar `emilgil/ocpp_charger` på rad 5–6;
+integrationen laddade rent efter omstart och laddaren återanslöt (Preparing).
+Funktionstest av `?`-länken görs i UI.
+
 ## 2026-07-04: Bug 36 – ETA-beräkningen använde fel batterikapacitet och ingen effektivitetskorrigering
 
 **Symptom:** Under en Skoda Enyaq-laddning (SoC 44→80 %, 4,2 kW) visade `planned_charge_end`/
