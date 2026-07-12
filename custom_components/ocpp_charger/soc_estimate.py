@@ -25,7 +25,16 @@ def estimate_soc(
     Estimation applies only with a known start SOC, positive delivered energy and a
     positive capacity. The result is **uncapped** – callers cap against the target
     themselves when they need to (the planner does; the goal check compares directly).
+    The estimate never goes below ``reported_soc`` when one exists (Bug 38): SOC
+    never drops during a cable session, so a fresh report is a safe floor.
     """
     if start_soc is not None and already_charged_kwh > 0 and capacity_kwh > 0:
-        return start_soc + already_charged_kwh * efficiency / capacity_kwh * 100.0
+        estimated = start_soc + already_charged_kwh * efficiency / capacity_kwh * 100.0
+        # Bug 38: SoC sjunker aldrig under laddning – låt aldrig estimatet
+        # understiga färsk rapporterad SoC (skydd mot förlorad sessionsenergi,
+        # t.ex. efter HA-omstart mitt i session). Stale sensor åt andra hållet
+        # (för LÅG rapport) påverkas inte: max() väljer då estimatet som förut.
+        if reported_soc is not None:
+            return max(estimated, reported_soc)
+        return estimated
     return reported_soc

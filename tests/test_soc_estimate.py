@@ -42,6 +42,29 @@ def test_matches_planner_formula():
     assert round(est, 1) == 83.6, est
 
 
+# ── Bug 38: floor at fresh reported SOC ────────────────────────────────────
+def test_floor_at_reported_soc_when_session_energy_lost():
+    # Live incident 2026-07-12: HA restart mid-session erased _session_total_kwh,
+    # so the estimate collapsed to start 52% + 2.64 kWh → 55.2% while the sensor
+    # (fresh at transaction pause) reported 84%. SOC never drops during a cable
+    # session, so the reported value is a safe floor.
+    est = soc_estimate.estimate_soc(52.0, 2.64, 77.0, EFF, 84.0)
+    assert est == 84.0, est
+
+
+def test_estimate_above_reported_wins():
+    # Stale sensor the other way (too LOW report, e.g. SOC entity frozen during
+    # charging) is unaffected: max() picks the estimate as before.
+    est = soc_estimate.estimate_soc(66.0, 12.27, 64.0, EFF, 66.0)
+    assert round(est, 1) == 83.6, est
+
+
+def test_floor_skipped_when_reported_none():
+    # No reported SOC → plain estimate, unchanged behaviour.
+    est = soc_estimate.estimate_soc(52.0, 2.64, 77.0, EFF, None)
+    assert round(est, 1) == 55.2, est
+
+
 # ── fallback to reported SOC (no estimation basis) ─────────────────────────
 def test_no_start_soc_returns_reported():
     assert soc_estimate.estimate_soc(None, 10.0, 64.0, EFF, 55.0) == 55.0

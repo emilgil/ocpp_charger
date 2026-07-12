@@ -46,7 +46,7 @@ custom_components/ocpp_charger/
   charge_planner.py    – Optimal laddplanering baserat på spotpriser
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
   deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
-  soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi (stdlib-only, testbar)
+  soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi; golvar mot färsk rapporterad SoC (Bug 38) (stdlib-only, testbar)
   price_cap.py         – Feature 5: select_price_cap_slots – slots ≤ pristak (stdlib-only, testbar)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
@@ -153,6 +153,7 @@ _cable_session_stop_notified: bool        # en stopp-notis per kabelsession
 _cable_session_notified_connect: bool     # Fix 9: en inkopplad-notis per kabelsession
 _session_total_kwh: float                 # Fix 7: ackumulerad energi sedan kabel in
 _suspended_ev_since: datetime | None      # SuspendedEV-detektion
+_cable_was_available: bool                # Bug 13A/38: armeras ENDAST av äkta Available; init False (Bug 38) så omstart mitt i kabelsession inte fyrar falsk genuin-inkoppling vid nästa Preparing
 _cable_connect_time: datetime | None      # Fix 10: tid för kabelinkoppling
 _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
 _charging_started_at: datetime | None     # Bug 34: fryst faktisk laddstartstid för PlannedChargeStartSensor (None innan start/efter urkoppling)

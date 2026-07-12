@@ -1,5 +1,39 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-07-12: Bug 38 – HA-omstart under pågående kabelsession raderade sessionsenergin vid nästa transaktionspaus
+
+**Symptom:** Efter en HA-omstart mitt i en Enyaq-laddning fyrade den planerade pausen kl 16:00
+(RemoteStop → Finishing → Preparing) den "genuina inkopplings"-grenen: `_session_total_kwh`
+nollställdes (23,50 kWh raderades), falsk "🔌 Inkopplad"-notis skickades och SoC-estimatet
+föll från ~80 % till 52–55 % (sensorn sa 84 %) → planeraren ville ladda 34 kWh istället för ~9,4.
+
+**Rotorsak:** `_cable_was_available` initierades till `True` vid koordinatorkonstruktion – i
+motsägelse till sin egen kommentar ("True only after genuine Available status"). En omstart
+under pågående kabelsession armerade därmed en falsk genuin-inkoppling utan att någon
+`Available` setts; nästa `Preparing`-flank konsumerade flaggan och Bug 13A-grenens
+`+=`-bevarande hoppades över.
+
+**Åtgärd:**
+- `__init__.py`: init `False` – efter omstart krävs en äkta `Available` innan `Preparing`
+  tolkas som genuin inkoppling. Värsta fallet vid omstart med urkopplad kabel är en missad
+  "Inkopplad"-notis (Garo skickar normalt status vid OCPP-återanslutning som armerar flaggan).
+- `soc_estimate.py` (härdning): `estimate_soc()` golvar nu mot färsk `reported_soc` –
+  SoC sjunker aldrig under en kabelsession, så rapporten är ett säkert golv vid förlorad
+  sessionsenergi. Stale sensor åt andra hållet (för låg rapport) opåverkad: `max()` väljer
+  då estimatet som förut. Gäller alla tre anropsplatser (planeraren, `_charging_goal_reached()`,
+  Bug 36:s ETA).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_cable_was_available` init `True` → `False` (Bug 13A-vaktens initialvärde) |
+| `soc_estimate.py` | `max(estimated, reported_soc)`-golv + docstring |
+| `tests/test_soc_estimate.py` | 3 nya Bug 38-tester (golv med incident-siffrorna, stale-låg-rapport, `reported=None`) |
+
+**Verifiering:** TDD – golvtestet föll först (55.2 % med incident-siffrorna), grönt efter fix;
+hela sviten grön; deploy + full omstart under pågående laddning (= själva buggscenariot, säkert
+med nya koden); SOC-entiteten omlästes till 85 % vid uppstart och post-restart-planeringen
+verifierad mot golvet i debug-loggen.
+
 ## 2026-07-06: Bug 37 – Platshållar-URL i deployad manifest.json gav 404 från Options-dialogens ?-länk
 
 **Symptom:** Frågetecknet i integrationens Options-dialog länkade till
