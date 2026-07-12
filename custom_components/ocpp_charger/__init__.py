@@ -417,7 +417,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._day_offer_notified_date = None  # date of last presence-based day-charging offer
         self._charging_seen_this_session: bool = False  # Bug 10: guard stop-notif at restart
         self._suspended_ev_since: datetime | None = None  # Bug 5: SuspendedEV tracking
-        self._cable_was_available: bool = True  # Bug 13A: True only after genuine Available status
+        # Bug 38: init False – efter HA-omstart krävs en äkta Available innan Preparing
+        # tolkas som genuin inkoppling. True-init gjorde att en omstart under pågående
+        # kabelsession armerade en falsk "genuin inkoppling" som fyrade vid nästa
+        # transaktionspaus (RemoteStop → Finishing → Preparing) och raderade
+        # _session_total_kwh, förfalskade SoC-estimatet och skickade falsk Inkopplad-notis.
+        self._cable_was_available: bool = False  # Bug 13A/38: True only after genuine Available status
         # Cable session tracking (Bug 6): spans cable-in → cable-out
         self._cable_session_energy_kwh: float = 0.0
         self._cable_session_cost_sek: float = 0.0
