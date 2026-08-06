@@ -311,6 +311,13 @@ nollar `_reset_deadline_helper()` helpern till `00:00:00` via `input_datetime.se
 så att ett saknat helper-objekt inte spammar fel. Ingen Store-nyckel längre (HA:s `input_datetime`-lagring
 sköter persistensen); gammal `"manual_deadline"`-nyckel i Store ignoreras tyst.
 
+**Bug 39:** `async_setup_entry` registrerar en `async_track_state_change_event`-lyssnare på
+`INPUT_DATETIME_DEADLINE` (samma mönster som `set_price_cap()`) som bypassar plan-throttlen och
+kör `_update_charge_plan()` + `async_set_updated_data()` direkt vid ändring. Tidigare lästes
+helpern bara on-demand av `_get_manual_deadline_str()`, så en ändring i UI syntes i
+Laddfönster-grafen/`charge_windows`-sensorn först vid nästa oberoende omplanering (periodisk
+poll, upp till ~60s), asymmetriskt mot pristakets omedelbara uppdatering.
+
 OBS: helpern måste finnas (skapas manuellt i Inställningar → Hjälpare → Tid). Integrationen skapar den
 **inte** (HA:s API för programmatisk skapning är instabilt/versionsberoende). Saknas den → automatisk
 deadline. Den gamla `text.*_manual_deadline`-entiteten blir föräldralös efter deploy – radera manuellt.
