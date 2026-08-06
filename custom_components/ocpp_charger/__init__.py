@@ -12,7 +12,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.storage import Store
 
 from .const import (
@@ -188,6 +188,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(
         hass.bus.async_listen("mobile_app_notification_action", _handle_notification_action)
+    )
+
+    # Bug 39: input_datetime.charger_target_time saknade en state-lyssnare — deadline
+    # lästes bara på begäran (_get_manual_deadline_str), så en ändring syntes i
+    # Laddfönster-grafen/sensorn först vid nästa oberoende _update_charge_plan()-anrop
+    # (periodisk poll, OCPP-event etc.), inte omedelbart som pristaket (set_price_cap).
+    @callback
+    def _handle_deadline_change(event) -> None:
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None or (old_state is not None and old_state.state == new_state.state):
+            return
+        _LOGGER.info(
+            "[Deadline] %s ändrad %s → %s, planerar om",
+            coordinator._deadline_entity_id,
+            old_state.state if old_state else None,
+            new_state.state,
+        )
+        coordinator._last_plan_update = None  # bypass throttle, samma mönster som set_price_cap
+        coordinator._update_charge_plan()
+        coordinator.async_set_updated_data(coordinator.ocpp.state)
+
+    entry.async_on_unload(
+        async_track_state_change_event(
+            hass, [coordinator._deadline_entity_id], _handle_deadline_change,
+        )
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

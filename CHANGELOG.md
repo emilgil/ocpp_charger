@@ -1,5 +1,31 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-08-06: Bug 39 – input_datetime.charger_target_time saknade state-lyssnare, Laddfönster-grafen hängde efter
+
+**Symptom:** Ändring av `input_datetime.charger_target_time` (manuell deadline) i UI
+uppdaterade inte Elpris-kortets Laddfönster-serie omedelbart, till skillnad från pristaket
+(`number.*_price_cap`) som redan gav omedelbar omritning av båda serierna. `sensor.*_charge_windows`
+stämde till slut, men först vid nästa oberoende omplanering (periodisk poll, upp till ~60s).
+
+**Rotorsak:** Pristak och deadline hanterades asymmetriskt. `set_price_cap()` (Feature 5) kör
+`_update_charge_plan()` + `async_set_updated_data()` direkt vid ändring, men deadline-helpern
+(Feature 6) lästes bara on-demand via `_get_manual_deadline_str()` – ingen
+`async_track_state_change_event`-lyssnare fanns registrerad på helperns entitet.
+
+**Åtgärd:** Ny lyssnare i `async_setup_entry` på `INPUT_DATETIME_DEADLINE`, som speglar
+`set_price_cap()`-mönstret: bypassar plan-throttlen (`_last_plan_update = None`) och kör
+`_update_charge_plan()` + `async_set_updated_data()` direkt vid state-ändring. No-op-vakt på
+`old_state.state == new_state.state` undviker onödig omplanering.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | Import `async_track_state_change_event`; ny `_handle_deadline_change`-lyssnare i `async_setup_entry` |
+
+**Verifiering:** Full test-svit grön (ingen ren logik berörd – HA-glue-kod). Deploy + full
+HA-omstart, ren loggstart utan fel. Live-verifiering av själva UI-ändringen kräver ett faktiskt
+klick i helper-UI:t (ingen HA-service-API-åtkomst från Claude Code, se referensminnet
+`reference_live_verify_no_api`) – görs av användaren, se post-deploy-checklistan i `bug39.md`.
+
 ## 2026-07-12: Bug 38 – HA-omstart under pågående kabelsession raderade sessionsenergin vid nästa transaktionspaus
 
 **Symptom:** Efter en HA-omstart mitt i en Enyaq-laddning fyrade den planerade pausen kl 16:00
