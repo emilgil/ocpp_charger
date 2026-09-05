@@ -68,6 +68,8 @@ from .const import (
     NOTIFY_ACTION_USE_NIGHT,
     NOTIFY_ACTION_DISMISS,
     NOTIFY_ACTION_SELECT_VEHICLE,
+    NOTIFY_ACTION_KEEP_TODAY,
+    NOTIFY_ACTION_WAIT_TOMORROW,
     PLANNER_ALGO_GREEDY,
     PLANNER_ALGO_CONTIGUOUS,
     SELECT_PLANNER_ALGORITHM,
@@ -91,7 +93,14 @@ from .ocpp_client import ChargerState, OCPPClient
 from .smart_charge import SmartChargeController
 from .current_schedule import CurrentSchedule
 from .rest_client import ChargerRestClient
-from .charge_planner import ChargePlan, plan_cheapest_window, _to_utc, INTERVAL_MINUTES, INTERVAL_HOURS
+from .charge_planner import (
+    ChargePlan,
+    plan_cheapest_window,
+    is_next_day_shift,
+    _to_utc,
+    INTERVAL_MINUTES,
+    INTERVAL_HOURS,
+)
 from .price_cap import select_price_cap_slots
 from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline, helper_state_to_hhmm
@@ -172,6 +181,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinator._update_charge_plan()
             coordinator.async_set_updated_data(coordinator.ocpp.state)
             coordinator.notifier.dismiss_day_night_notification()
+        elif action == NOTIFY_ACTION_KEEP_TODAY:
+            _LOGGER.info("[Notify] User chose to KEEP today's plan (Bug 40)")
+            # Keep _next_day_shift_hold set: the planner still prefers the later
+            # day, so the hold must stay in force (without re-notifying) until the
+            # calendar day rolls over, the shift resolves, or the cable is out.
+            coordinator._next_day_shift_hold = True
+            coordinator._next_day_shift_accepted = False
+            coordinator._last_plan_update = None  # bypass throttle, same as set_price_cap
+            coordinator._update_charge_plan()
+            coordinator.async_set_updated_data(coordinator.ocpp.state)
+            coordinator.notifier.dismiss_next_day_shift_notification()
+        elif action == NOTIFY_ACTION_WAIT_TOMORROW:
+            _LOGGER.info("[Notify] User accepted shift to next day (Bug 40)")
+            if coordinator.ocpp.state.charging:
+                # Bug 28: never abort an active session. The accepted later-day
+                # plan is applied by the next _update_charge_plan() after the
+                # session ends naturally (goal / cable out / price-hole pause).
+                coordinator._next_day_shift_accepted = True
+            elif coordinator._next_day_shift_candidate is not None:
+                coordinator.charge_plan = coordinator._next_day_shift_candidate
+            coordinator._next_day_shift_hold = False
+            coordinator._next_day_shift_candidate = None
+            coordinator._last_plan_update = None  # bypass throttle, same as set_price_cap
+            coordinator._update_charge_plan()
+            coordinator.async_set_updated_data(coordinator.ocpp.state)
+            coordinator.notifier.dismiss_next_day_shift_notification()
         elif action.startswith(NOTIFY_ACTION_SELECT_VEHICLE):
             idx_str = action[len(NOTIFY_ACTION_SELECT_VEHICLE):]
             try:
@@ -421,6 +456,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
         # Bug 28: plan windows frozen at session start; None = no active frozen session.
         # An active session is gated by this list, not by a plan recalculated mid-charge.
         self._session_plan_intervals: list[tuple[datetime, datetime]] | None = None
+        # Bug 40: guard against a silent same-day → later-day plan shift when new
+        # prices extend the deadline horizon by a whole day (weekend/day branch).
+        self._next_day_shift_hold: bool = False                  # holding today's plan; notice sent / "keep today" chosen
+        self._next_day_shift_candidate: "ChargePlan | None" = None  # freshest cheaper later-day plan (for "wait")
+        self._next_day_shift_accepted: bool = False              # user chose "Vänta till imorgon"; applied after active session ends
         self._preparing_timestamp: datetime | None = None  # for Finishing-after-Preparing guard
         self._last_connect_notify_time: datetime | None = None  # debounce duplicate Preparing
         self._last_transaction_start: datetime | None = None  # for grace period after start
@@ -1583,6 +1623,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._was_charging = False
             self._charging_started_at = None  # Bug 34: nollställ fryst starttid vid urkoppling
             self._session_plan_intervals = None  # Bug 28: clear frozen plan on cable disconnect
+            # Bug 40: clear next-day-shift choice state on cable disconnect
+            if self._next_day_shift_hold:
+                self.notifier.dismiss_next_day_shift_notification()
+            self._next_day_shift_hold = False
+            self._next_day_shift_candidate = None
+            self._next_day_shift_accepted = False
             self._session_total_kwh = 0.0  # Fix 7: reset accumulated energy
             self._cable_session_notified_connect = False  # Fix 9: reset connect-notif flag
             self._cable_connect_time = None  # Fix 4: reset SOC reread
@@ -1962,7 +2008,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             local_tz=local_tz,
         )
 
-        self.charge_plan = plan_cheapest_window(
+        new_plan = plan_cheapest_window(
             **_common_kwargs, contiguous=_use_contiguous,
         )
 
@@ -1971,6 +2017,80 @@ class OCPPCoordinator(DataUpdateCoordinator):
             **_common_kwargs, contiguous=not _use_contiguous,
         )
         self._alt_plan = alt_plan
+
+        # ── Bug 40: guard against a silent same-day → later-day plan shift ──────
+        # When tomorrow's prices arrive, compute_deadline's weekend/allow_day
+        # branch can push the deadline horizon a whole day further out and the
+        # cheapest-window planner defers today's already-chosen window to a later
+        # day for an arbitrarily small saving – shown in the log/graph as HH:MM
+        # only, so today's window looks like it "vanished" (Bug 40 report).
+        # Hold today's plan and let the user choose via an actionable notice.
+        # is_next_day_shift() compares the new window's start day against the
+        # previous plan's *end* day, so a normal weekday night sliding from
+        # "22:00 today" to "02:00 tomorrow" before the same 06:00 deadline is NOT
+        # a shift. The hold is scoped to the current calendar day: once
+        # prev_plan.start is no longer "today" the planner is free again (the
+        # cleanup branch below drops the hold).
+        _shift_detected = is_next_day_shift(
+            prev_plan, new_plan, now_local, local_tz,
+            cable_connected=self.ocpp.state.cable_connected,
+        )
+
+        if _shift_detected and not self._next_day_shift_accepted:
+            # Hold today's plan. Notify once; keep holding (without re-notifying)
+            # until the user answers, the shift resolves itself, the cable is
+            # unplugged, or the calendar day rolls over.
+            self._next_day_shift_candidate = new_plan  # refresh so "wait" applies the freshest plan
+            if not self._next_day_shift_hold:
+                _LOGGER.info(
+                    "[ChargePlanner] Bug 40: nytt fönster (%s) på senare dag än nuvarande "
+                    "plan (%s–%s) – behåller dagens plan, skickar valnotis",
+                    new_plan.start.astimezone(local_tz).strftime("%Y-%m-%d %H:%M"),
+                    prev_plan.start.astimezone(local_tz).strftime("%Y-%m-%d %H:%M"),
+                    prev_plan.end.astimezone(local_tz).strftime("%H:%M"),
+                )
+                self._next_day_shift_hold = True
+                self.notifier.on_next_day_shift_choice(
+                    today_start=prev_plan.start.astimezone(local_tz),
+                    today_end=prev_plan.end.astimezone(local_tz),
+                    today_cost=prev_plan.estimated_cost_sek,
+                    today_avg_ore=prev_plan.avg_price_ore_kwh,
+                    next_start=new_plan.start.astimezone(local_tz),
+                    next_end=new_plan.end.astimezone(local_tz),
+                    next_cost=new_plan.estimated_cost_sek,
+                    next_avg_ore=new_plan.avg_price_ore_kwh,
+                )
+            else:
+                _LOGGER.debug("[ChargePlanner] Bug 40: hopp kvarstår – behåller dagens plan")
+            self.charge_plan = prev_plan
+            return
+
+        if (
+            self._next_day_shift_accepted
+            and self.ocpp.state.charging
+            and prev_plan is not None
+            and prev_plan.feasible
+        ):
+            # "Vänta till imorgon" accepted mid-charge: keep today's plan visible
+            # until the active session ends (Bug 28 – never abort it). The
+            # later-day plan is applied by the next cycle once charging stops
+            # (goal reached, cable out, or a price-hole pause).
+            self.charge_plan = prev_plan
+            return
+
+        self.charge_plan = new_plan
+
+        if self._next_day_shift_hold and not _shift_detected:
+            # Shift resolved before/after the user acted (prices moved back, or
+            # the calendar day rolled over) – drop the hold and clear the notice.
+            _LOGGER.info("[ChargePlanner] Bug 40: hoppet upphörde – rensar valnotis")
+            self._next_day_shift_hold = False
+            self._next_day_shift_candidate = None
+            self.notifier.dismiss_next_day_shift_notification()
+        if self._next_day_shift_accepted:
+            _LOGGER.debug("[ChargePlanner] Bug 40: accepterad imorgon-plan tagen i bruk, nollställer flagga")
+            self._next_day_shift_accepted = False
+
         self._rebuild_charge_windows()  # Bug 24: synka charge-windows-sensorn direkt vid planändring
 
         # Notify if day charging allowed and plan lands in daytime

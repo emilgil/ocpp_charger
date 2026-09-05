@@ -56,6 +56,39 @@ class ChargePlan:
         return None
 
 
+def is_next_day_shift(
+    prev_plan: "ChargePlan | None",
+    new_plan: "ChargePlan | None",
+    now_local: datetime,
+    local_tz,
+    *,
+    cable_connected: bool,
+) -> bool:
+    """Bug 40: True when a recalculated plan silently defers today's window to a later day.
+
+    When tomorrow's prices arrive, ``compute_deadline``'s weekend / allow-day
+    branch can extend the deadline horizon by a whole day; the cheapest-window
+    planner then moves an already-chosen window to a later day for an
+    arbitrarily small saving, shown in the log/graph as HH:MM only so it looks
+    like today's window vanished.
+
+    The new window's start day is compared against the *previous plan's end
+    day*, not its start day: a normal weekday night sliding from "22:00 today"
+    to "02:00 tomorrow" before the same 06:00 deadline finishes on the same day
+    the new window starts, so it is NOT a shift; a whole-day defer
+    (``14:45–16:00`` Sat → ``12:45–14:00`` Sun) is.
+    """
+    if prev_plan is None or new_plan is None:
+        return False
+    if not (prev_plan.feasible and new_plan.feasible and cable_connected):
+        return False
+    today = now_local.date()
+    prev_start_day = prev_plan.start.astimezone(local_tz).date()
+    prev_end_day = prev_plan.end.astimezone(local_tz).date()
+    new_start_day = new_plan.start.astimezone(local_tz).date()
+    return prev_start_day == today and prev_end_day < new_start_day
+
+
 def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)

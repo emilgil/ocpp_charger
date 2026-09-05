@@ -120,6 +120,11 @@ Notiser skickas max en gång per session för varje händelse:
 
 Notiserna är åtgärdbara – du kan välja dag- eller nattladdning direkt från notisen.
 
+Om en omräknad plan skulle skjuta upp ett redan valt laddfönster ett helt dygn framåt (kan
+hända på helger när morgondagens priser publiceras) behålls dagens fönster och du får en notis
+med valen **🔌 Ladda idag** / **⏳ Vänta till imorgon**. "Vänta till imorgon" avbryter aldrig en
+pågående laddning – den nya planen börjar gälla först när den aktiva sessionen är klar.
+
 Du kan också ange en valfri **Dashboard URL** under notis-inställningarna. Är den ifylld öppnas dashboarden i HA Companion-appen när du klickar på notisen (lämnas tomt → notisen öppnar ingenting). Fungerar både på iOS (`data.url`) och Android (`data.clickAction`).
 
 ## Schema dag/natt
