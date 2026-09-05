@@ -43,7 +43,7 @@ custom_components/ocpp_charger/
   vehicle_detection.py – Auto-identifiering av fordon
   current_schedule.py  – Dag/natt-schema
   smart_charge.py      – Prisbeslut (fallback när ingen plan finns) + estimate_completion_time (ETA; tester i tests/test_smart_charge_bug36.py)
-  charge_planner.py    – Optimal laddplanering baserat på spotpriser
+  charge_planner.py    – Optimal laddplanering baserat på spotpriser + is_next_day_shift (Bug 40, stdlib-only, testbar; tester i tests/test_bug40.py)
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
   deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi; golvar mot färsk rapporterad SoC (Bug 38) (stdlib-only, testbar)
@@ -96,6 +96,9 @@ Ingen stop-logik körs inom 90 sekunder efter `StartTransaction`. Förhindrar at
 ### Sessionsplan-frysning (Bug 28)
 `_session_plan_intervals` fryser `plan.active_intervals` vid sessionstart (auto-start + manuell/Immediate). Window-stopp-grenen i `_update_smart_charging()` bedömer en **aktiv** session mot den frysta listan, inte mot `plan.is_in_window()`. Sedan Bug 16 körs `_update_charge_plan()` även mid-charge; utan frysning kunde en omräkning (morgondagens priser ~13:00) flytta fönstren bort från nuvarande tidpunkt → falsk "Outside plan window" → avbruten session som inte återupptas. Listan nollställs **endast** vid `Available` (kabelurkoppling), inte vid `Preparing` eller Garo 15-min-reset, så greedy-pauser inom kabelsessionen överlever. `None` = ingen aktiv frusen session → fallback till `plan.is_in_window()`. Designval: `allow_day_charging`/`_sync_allow_day_charging()` avbryter **inte** aktiv laddning (planeringsfilter, ej stopp-kommando); "stoppa nu" = stopp-knappen. **Bug 31:** listan persisteras i Store (ISO-serialiserade datetimes) och återställs i `_load_state()` – tidigare var den in-memory och en omstart mitt i laddning åter-exponerade "Outside plan window"-aborten.
 
+### Dag-till-nästa-dag-hopp-vakt (Bug 40)
+Kompletterar Bug 28 för fasen **innan** en session startat (kabel inkopplad, väntar på fönstret). När morgondagens priser publiceras utökar `compute_deadline()` (helg/`allow_day_charging`-grenen) horisonten ett helt dygn, och `plan_cheapest_window()` kan då skjuta upp dagens redan valda fönster ett dygn för en försumbar besparing – loggen visar bara `%H:%M` så det ser ut som att fönstret försvann. `is_next_day_shift(prev_plan, new_plan, now_local, local_tz, *, cable_connected)` (ren funktion i `charge_planner.py`, testad i `tests/test_bug40.py`) upptäcker hoppet: förra planen börjar **idag**, båda feasible, kabel inkopplad, och nya fönstrets start-dag ligger **efter förra planens *slut*-dag** (slut- inte start-dag → en vardagsnatt som glider "22:00 idag"→"02:00 imorgon" före samma 06:00-deadline räknas inte). Vid hopp håller `_update_charge_plan()` kvar `prev_plan` och skickar `on_next_day_shift_choice`-notisen (knappar 🔌 Ladda idag / ⏳ Vänta till imorgon) **en gång**. `_next_day_shift_hold` (sticky för kalenderdygnet, speglar `_day_charging_dismissed`-mönstret) håller planen utan att spamma tills användaren svarar / hoppet upphör / kabel ur / midnatt. `KEEP_TODAY` låser hållet; `WAIT_TOMORROW` byter in `_next_day_shift_candidate` direkt om ingen laddning pågår, annars sätts `_next_day_shift_accepted` och den nya planen tas i bruk först när den aktiva sessionen avslutats naturligt (mål / kabel ur / prishål) – en notisknapp får aldrig avbryta pågående laddning (Bug 28). Alla tre flaggor nollställs i `Available`-blocket. Pristaksläget (Feature 5) returnerar före vakten och berörs inte.
+
 ## Nyckelkonstanter (const.py)
 ```python
 DEFAULT_CHARGE_DEADLINE_HOUR        = 6      # Laddning klar senast 06:00
@@ -143,6 +146,9 @@ _last_remote_start: datetime | None       # för 5 min plan-frysning
 _last_remote_stop: datetime | None        # Fix 8: debounce dubbel RemoteStop (15s)
 _manual_start_requested: bool             # manuell override-flagga
 _session_plan_intervals: list[tuple] | None  # Bug 28: frysta planfönster för aktiv session (None = ingen)
+_next_day_shift_hold: bool                # Bug 40: håller dagens plan vid dag→nästa-dag-hopp (sticky för kalenderdygnet, nollställs vid Available)
+_next_day_shift_candidate: ChargePlan | None  # Bug 40: färskaste billigare senare-dag-planen (för "Vänta till imorgon")
+_next_day_shift_accepted: bool            # Bug 40: användaren valde "Vänta till imorgon" under laddning → planen tas i bruk först när sessionen avslutats
 _notified_connect_session: str | None     # dedup-guard anslutning
 _notified_start_session: str | None       # dedup-guard start
 _notified_stop_session: str | None        # dedup-guard stop
@@ -254,6 +260,14 @@ Tre events, var och en skickas max en gång per session (dedup-guards via sessio
 | `on_charging_stopped` | `charging=False` efter aktiv laddning |
 
 Notiserna är åtgärdbara: `ocpp_use_day_charging` / `ocpp_use_night_charging`.
+
+### Dag-till-nästa-dag-hopp-notis (Bug 40)
+`on_next_day_shift_choice` skickas när `is_next_day_shift()` upptäcker att en omräknad plan tyst
+skjuter upp dagens fönster ett helt dygn (se "Dag-till-nästa-dag-hopp-vakt"). Tag
+`ocpp_next_day_shift`, knappar `ocpp_keep_today_plan` (🔌 Ladda idag) / `ocpp_wait_tomorrow_plan`
+(⏳ Vänta till imorgon). Skickas **en gång** per hopp (styrs av `_next_day_shift_hold`, inte
+session_id-dedup). `dismiss_next_day_shift_notification()` rensar den från telefonen när
+användaren svarat, hoppet upphört eller kabeln dragits ur.
 
 ### Klickbar dashboard-URL (Feature 2)
 Valfritt fält `CONF_NOTIFY_DASHBOARD_URL` i notis-konfigurationen. När det är satt injicerar `ChargerNotifier` `data.url` (iOS) + `data.clickAction` (Android) i alla notispayloads så att klick på notisen öppnar dashboarden i HA Companion-appen. Tomt fält → oförändrat beteende. Live-uppdateras via `_async_update_listener` utan omstart.

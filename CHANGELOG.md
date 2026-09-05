@@ -1,5 +1,65 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-05: Bug 40 – laddplanen hoppade tyst till nästa dag när nya priser gjorde en senare dag marginellt billigare
+
+**Symptom:** Skoda inkopplad en lördag 12:00, plan `14:45–16:00` idag. Kl 13:00 anlände
+morgondagens elpriser; dagens laddfönster försvann och planen visade `12:45–14:00` – utan
+datum, så det såg ut som "senare idag" i loggen men var i själva verket söndag. Auto-start
+löste aldrig ut (`in_window=False`) och bilen stod oladdad tills användaren startade manuellt.
+
+**Rotorsak:** På helg/`allow_day_charging` sätter `compute_deadline()` deadline till "slutet av
+tillgänglig prisdata + 15 min". När morgondagens priser publiceras utökas horisonten ett helt
+dygn, och `plan_cheapest_window()` gör en global omsökning utan hänsyn till att en plan redan
+finns för idag – ett ~0,24 SEK billigare fönster imorgon räckte för att skjuta upp laddningen
+ett dygn. Bug 28:s frysning skyddar inte: den armeras först när en session *startat*, här
+väntade kabeln bara på fönstret.
+
+**Åtgärd:** Nytt beslutslager i koordinatorn ovanpå planerarresultatet (samma mönster som Bug 18
+dag/natt-valet) – ingen ändring i `charge_planner.py`s eller `deadline.py`s logik.
+
+- **`is_next_day_shift()`** (ny ren funktion i `charge_planner.py`, stdlib-only, testbar):
+  hopp = förra planen börjar *idag*, är feasible, kabel inkopplad, och nya fönstrets **start-dag
+  ligger efter förra planens *slut*-dag**. Slut-dagen (inte start-dagen) används medvetet: en
+  vanlig vardagsnatt som glider från "22:00 idag" till "02:00 imorgon" före samma 06:00-deadline
+  slutar samma dygn som det nya fönstret börjar → inget hopp. Bara ett helt dygns uppskjutning
+  triggar.
+- **`_update_charge_plan()`**: när hopp upptäcks och användaren inte redan valt "vänta" hålls
+  dagens plan (`self.charge_plan = prev_plan`) och en åtgärdbar notis skickas *en gång*.
+  Hållet ligger kvar (utan att spamma notiser) tills användaren svarar, hoppet upphör av sig
+  självt, kabeln dras ur, eller kalenderdygnet rullar över.
+- **Notis** `on_next_day_shift_choice()` / `dismiss_next_day_shift_notification()` i
+  `notifier.py`, knappar **🔌 Ladda idag** / **⏳ Vänta till imorgon**, tag `ocpp_next_day_shift`.
+- **`_handle_notification_action()`**: `KEEP_TODAY` låser hållet för kalenderdygnet;
+  `WAIT_TOMORROW` byter in imorgon-planen direkt om ingen laddning pågår, annars sätts
+  `_next_day_shift_accepted` och planen tas i bruk först när den aktiva sessionen avslutats
+  naturligt (mål nått / kabel ur / prishål) – Bug 28: en notisknapp får aldrig avbryta en
+  pågående laddning.
+- Alla flaggor nollställs i `Available`-blocket (kabelurkoppling), som övriga sessionsflaggor.
+
+Avvikelser från spec-utkastet i `bug40.md` (medvetna): (1) jämför förra planens *slut*-dag,
+inte start-dag – annars falsklarm på vanliga vardagsnätter; (2) `return` efter hållet så
+dag/natt-erbjudandelogiken inte körs på en fryst plan; (3) flaggmodellen bantad till ett
+`_next_day_shift_hold` (sticky för kalenderdygnet, speglar `_day_charging_dismissed`) + candidate
++ accepted – spec-utkastets `_pending` skulle ha spammat om notisen varje 5 min efter "Ladda
+idag" eftersom planeraren fortsatt föredrar imorgon; (4) `_next_day_shift_candidate` uppdateras
+varje håll-cykel så "vänta" tillämpar färskaste imorgon-plan; (5) auto-städning + notis-dismiss
+om hoppet upphör innan användaren svarat.
+
+| Fil | Ändring |
+|-----|---------|
+| `charge_planner.py` | +`is_next_day_shift()` (ren funktion) |
+| `__init__.py` | +3 instansvariabler, håll-block i `_update_charge_plan()`, 2 grenar i `_handle_notification_action()`, nollställning i `Available`-blocket, import |
+| `notifier.py` | +`on_next_day_shift_choice()`, +`dismiss_next_day_shift_notification()` |
+| `const.py` | +`NOTIFY_ACTION_KEEP_TODAY`, +`NOTIFY_ACTION_WAIT_TOMORROW` |
+| `tests/test_bug40.py` | +8 tester för `is_next_day_shift()` (bug-fallet, vardagsnatt-glid, samma-natt, samma-dag, midnatt, kabel ur, None/infeasible, lokal tidszon) |
+
+**Verifiering:** Hela test-sviten grön (70 tester: 8 nya + 62 befintliga). `is_next_day_shift()`
+är enhetstestad; håll-mekaniken är HA-kopplad koordinator-glue (som Bug 28/23/18) och verifieras
+live enligt checklistan i `bug40.md` – ingen HA-service-API-åtkomst från Claude Code
+(se `reference_ha_api_access`). Live-punkter kvar: notis kommer fram med båda knapparna, "Ladda
+idag" håller dagens fönster utan att spamma, "Vänta till imorgon" byter graf direkt (ej under
+laddning), samt regressionskoll att pristak + dag/natt-notiser fortfarande fungerar.
+
 ## 2026-08-06: Bug 39 – input_datetime.charger_target_time saknade state-lyssnare, Laddfönster-grafen hängde efter
 
 **Symptom:** Ändring av `input_datetime.charger_target_time` (manuell deadline) i UI

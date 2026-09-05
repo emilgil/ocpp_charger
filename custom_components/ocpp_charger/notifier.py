@@ -247,6 +247,77 @@ class ChargerNotifier:
         except Exception as err:
             _LOGGER.warning("[Notify] Failed to dismiss notification: %s", err)
 
+    def on_next_day_shift_choice(
+        self,
+        today_start: datetime,
+        today_end: datetime,
+        today_cost: float,
+        today_avg_ore: float,
+        next_start: datetime,
+        next_end: datetime,
+        next_cost: float,
+        next_avg_ore: float,
+    ) -> None:
+        """Actionable notification: keep today's plan or accept a cheaper next-day window (Bug 40)."""
+        from .const import NOTIFY_ACTION_KEEP_TODAY, NOTIFY_ACTION_WAIT_TOMORROW
+
+        today_line = (
+            f"🔌 Idag {_fmt_time(today_start)}–{_fmt_time(today_end)}"
+            f" · {today_avg_ore:.1f} öre/kWh · ≈{today_cost:.2f} SEK"
+        )
+        next_line = (
+            f"⏳ Imorgon {_fmt_time(next_start)}–{_fmt_time(next_end)}"
+            f" · {next_avg_ore:.1f} öre/kWh · ≈{next_cost:.2f} SEK"
+        )
+        msg = f"Billigare fönster hittat imorgon:\n{today_line}\n{next_line}"
+
+        if not self.enabled or not self.notify_target:
+            return
+        try:
+            data_block: dict = {
+                "tag": "ocpp_next_day_shift",
+                "actions": [
+                    {"action": NOTIFY_ACTION_KEEP_TODAY, "title": "🔌 Ladda idag"},
+                    {"action": NOTIFY_ACTION_WAIT_TOMORROW, "title": "⏳ Vänta till imorgon"},
+                ],
+            }
+            if self.dashboard_url:
+                data_block["url"] = self.dashboard_url           # iOS
+                data_block["clickAction"] = self.dashboard_url   # Android
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify",
+                    self.notify_target.replace("notify.", "", 1),
+                    {
+                        "title": "EV Laddning – Billigare fönster imorgon",
+                        "message": msg,
+                        "data": data_block,
+                    },
+                )
+            )
+            _LOGGER.info("[Notify] Actionable next-day-shift choice sent")
+        except Exception as err:
+            _LOGGER.warning("[Notify] Failed to send next-day-shift notification: %s", err)
+
+    def dismiss_next_day_shift_notification(self) -> None:
+        """Clear the next-day-shift choice notification from the phone (Bug 40)."""
+        if not self.enabled or not self.notify_target:
+            return
+        try:
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify",
+                    self.notify_target.replace("notify.", "", 1),
+                    {
+                        "message": "clear_notification",
+                        "data": {"tag": "ocpp_next_day_shift"},
+                    },
+                )
+            )
+            _LOGGER.info("[Notify] Dismissed next-day-shift notification")
+        except Exception as err:
+            _LOGGER.warning("[Notify] Failed to dismiss notification: %s", err)
+
     def on_charger_disconnected(self, minutes: int) -> None:
         """Notify when charger WebSocket has been disconnected for a while."""
         self._send(

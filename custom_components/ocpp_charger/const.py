@@ -207,6 +207,8 @@ NOTIFY_ACTION_USE_DAY        = "ocpp_use_day_charging"
 NOTIFY_ACTION_USE_NIGHT      = "ocpp_use_night_charging"
 NOTIFY_ACTION_DISMISS        = "ocpp_dismiss_day_charging"
 NOTIFY_ACTION_SELECT_VEHICLE = "ocpp_select_vehicle_"  # prefix; append vehicle index
+NOTIFY_ACTION_KEEP_TODAY     = "ocpp_keep_today_plan"      # Bug 40
+NOTIFY_ACTION_WAIT_TOMORROW  = "ocpp_wait_tomorrow_plan"   # Bug 40
 
 # Cumulative cost sensor
 SENSOR_TOTAL_COST = "total_charging_cost"
