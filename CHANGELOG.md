@@ -1,5 +1,38 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-12: Bug 41 – fordonsbyte + Garo-reset ackumulerade det gamla fordonets energi in i den nya sessionen
+
+**Symptom:** Kia eNiro kopplades in strax efter att fordonet bytts från Skoda Enyaq via
+`Active Vehicle`-selectorn. Planerat fönster 13:30–16:15 löste aldrig ut auto-start.
+Laddfönstren i "Elpris"-grafen (`Laddfönster`-serien) försvann kl 13:31 – innan användaren
+gjort något manuellt. En efterföljande `Preparing` (Garo autostart+stopp inom loggens
+13:27) tolkades som ett internt Garo-reset och adderade in Skodas kvarvarande
+`state.energy_kwh` (17,07 kWh) i den nyss nollställda `_session_total_kwh` för Kian.
+SOC-estimatet blev 95–98 % mot ett mål på 95 % (verklig SOC 73 %) → "Mål redan nått" →
+auto-start undertrycktes och planeraren räknade 0 kWh kvar resten av sessionen.
+
+**Rotorsak:** `set_active_vehicle()` nollställer `_session_total_kwh` vid fordonsbyte men
+rör inte `self.ocpp.state.energy_kwh` (ägs av `ocpp_client.py`, rensas aldrig vid byte).
+Garo-reset-grenen (Bug 13A/33, `Preparing` utan föregående genuin `Available`) antar att
+`state.energy_kwh` alltid hör till den redan pågående sessionen och ackumulerar den blint
+in i `_session_total_kwh` – ett antagande som håller för en ren Garo-intern 15-minuters-
+omstart men bryts när ett fordonsbyte skedde strax innan: exakt den kryssningsbugg Bug 33
+redan löste i genuin-anslutnings-grenen, fast nu i den andra grenen.
+
+**Åtgärd:** Ny flagga `_vehicle_switch_pending_reset`, satt i `set_active_vehicle()` vid
+namnbyte. Vilken gren som helst som ser nästa `Preparing` konsumerar flaggan: om satt
+nollställs `_session_total_kwh` istället för att ackumulera `state.energy_kwh` (oavsett om
+grenen klassar `Preparing` som Garo-reset eller genuin anslutning).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | +`_vehicle_switch_pending_reset`-fält, sätts i `set_active_vehicle()`, konsumeras i både Garo-reset- och genuin-anslutnings-grenen av `_check_notify_events()` |
+
+**Verifiering:** Ren koordinator-glue (HA-kopplad, som Bug 13A/33/38) – verifieras live
+enligt checklistan i `bug41.md`: `[Bug41]`-loggraden ska synas vid nästa fordonsbyte +
+inkoppling utan genuin `Available` emellan, med SOC-estimat som matchar fordonets
+verkliga SOC istället för 20+ procentenheter för högt.
+
 ## 2026-09-05: Bug 40 – laddplanen hoppade tyst till nästa dag när nya priser gjorde en senare dag marginellt billigare
 
 **Symptom:** Skoda inkopplad en lördag 12:00, plan `14:45–16:00` idag. Kl 13:00 anlände

@@ -467,6 +467,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._last_remote_start: datetime | None = None       # for plan freeze after RemoteStart
         self._last_remote_stop: datetime | None = None        # Fix 8: debounce double RemoteStop
         self._session_total_kwh: float = 0.0                  # Fix 7: accumulated energy since cable-in
+        self._vehicle_switch_pending_reset: bool = False      # Bug 41: next Preparing must not
+                                                                # re-accumulate stale state.energy_kwh
         self._cable_connect_time: datetime | None = None       # Fix 4: when cable was plugged in
         self._soc_at_connect: float | None = None              # Fix 4: SOC at cable connect
         self._soc_reread_done: bool = False                    # Fix 4: True when reread period over
@@ -1453,6 +1455,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 prev_name, new_name, self._session_total_kwh,
             )
             self._session_total_kwh = 0.0
+            # Bug 41: state.energy_kwh isn't cleared by a vehicle switch. If the next
+            # Preparing is classified as a Garo-reset (no genuine Available in between,
+            # e.g. because the cable was never truly unplugged between vehicles), that
+            # branch must not blindly re-accumulate the old vehicle's stale energy.
+            self._vehicle_switch_pending_reset = True
         self.active_vehicle = vehicle
         self.battery_capacity_kwh = float(vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
         self.soc_entity = vehicle.get(VEHICLE_SOC_ENTITY, "")
@@ -1659,19 +1666,33 @@ class OCPPCoordinator(DataUpdateCoordinator):
             and self._last_connector_status_notify != "Preparing"
             and not self._cable_was_available
         ):
-            # Bug 33 / Fix 7: a Garo 15-min internal reset ends one transaction and
-            # starts another within the same cable session. Save the just-completed
-            # sub-session's energy before the new StartTransaction resets
-            # state.energy_kwh to 0, so the SOC estimate doesn't lose it. Edge-
-            # triggered (_last_connector_status_notify != "Preparing") → fires once
-            # per reset, and energy_kwh here is current-session data (not the cross-
-            # session stale value that plagued the genuine-connect branch).
-            self._session_total_kwh += self.ocpp.state.energy_kwh
-            _LOGGER.debug(
-                "[Bug13A] Preparing utan föregående Available – Garo-reset, skippar "
-                "Inkopplad-notis (sparar %.3f kWh, _session_total_kwh=%.3f)",
-                self.ocpp.state.energy_kwh, self._session_total_kwh,
-            )
+            if self._vehicle_switch_pending_reset:
+                # Bug 41: a vehicle switch happened since the last reset, and this
+                # Preparing is the first one since then. Even though it wasn't preceded
+                # by a genuine Available, treat it as a fresh start for the new vehicle
+                # instead of accumulating state.energy_kwh, which still holds the
+                # previous vehicle's stale value (set_active_vehicle() doesn't touch it).
+                self._session_total_kwh = 0.0
+                self._vehicle_switch_pending_reset = False
+                _LOGGER.debug(
+                    "[Bug41] Preparing efter fordonsbyte – nollställer _session_total_kwh "
+                    "(ignorerar stale state.energy_kwh=%.3f)",
+                    self.ocpp.state.energy_kwh,
+                )
+            else:
+                # Bug 33 / Fix 7: a Garo 15-min internal reset ends one transaction and
+                # starts another within the same cable session. Save the just-completed
+                # sub-session's energy before the new StartTransaction resets
+                # state.energy_kwh to 0, so the SOC estimate doesn't lose it. Edge-
+                # triggered (_last_connector_status_notify != "Preparing") → fires once
+                # per reset, and energy_kwh here is current-session data (not the cross-
+                # session stale value that plagued the genuine-connect branch).
+                self._session_total_kwh += self.ocpp.state.energy_kwh
+                _LOGGER.debug(
+                    "[Bug13A] Preparing utan föregående Available – Garo-reset, skippar "
+                    "Inkopplad-notis (sparar %.3f kWh, _session_total_kwh=%.3f)",
+                    self.ocpp.state.energy_kwh, self._session_total_kwh,
+                )
 
         if (
             self._notify_on_connect
@@ -1705,6 +1726,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             # auto-start was suppressed ("mål redan nått"). The accumulation that
             # Fix 7 intended belongs in the Garo-reset branch (see above), not here.
             self._session_total_kwh = 0.0  # Bug 33: genuine connect starts fresh
+            self._vehicle_switch_pending_reset = False  # Bug 41: already handled, clear it
             self.ocpp.state.accumulated_cost = 0.0
             self._last_cost_energy_kwh = 0.0
             # Bug 6: Reset cable session accumulators
