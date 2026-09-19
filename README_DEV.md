@@ -32,7 +32,7 @@ custom_components/ocpp_charger/
   vehicle_detection.py – Auto-identifiering av fordon
   current_schedule.py  – Dag/natt-schema
   smart_charge.py      – Prisbeslut (fallback när ingen plan finns)
-  charge_planner.py    – Optimal laddplanering baserat på spotpriser
+  charge_planner.py    – Optimal laddplanering baserat på spotpriser (+ Immediate-fönster, Bug 42)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
   manifest.json
@@ -72,7 +72,7 @@ SMART_CHARGE_PRICE_THRESHOLD_PERCENTILE = 0.4  # fallback-tröskel
 
 ## Laddningsstyrning – prioritetsordning
 
-1. **Charge mode = Immediate** → ladda alltid
+1. **Charge mode = Immediate** → ladda alltid (planen/Charge Windows visar ett block sessionsstart → beräknad sluttid, Bug 42; den styr inte start/stopp)
 2. **Charge mode = Smart + feasible plan** → ladda ENDAST inom `plan.start–plan.end`
    - Auto-start: `_update_smart_charging()` skickar RemoteStart när klockan passerar `plan.start`
    - Auto-stop: RemoteStop vid `plan.end`

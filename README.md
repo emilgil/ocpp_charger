@@ -35,7 +35,7 @@ En Home Assistant custom component som fungerar som OCPP 1.6 Central System. Lad
 
 | Läge | Beskrivning |
 |------|-------------|
-| **Immediate** | Laddar alltid när kabeln är inkopplad |
+| **Immediate** | Laddar alltid när kabeln är inkopplad. Laddfönster-grafen visar ett enda block från laddstart till beräknad sluttid |
 | **Smart (price-optimised)** | Laddar under de billigaste timmarna, klart till deadline (standard 06:00) |
 | **Scheduled** | Laddar inom ett konfigurerat tidsintervall |
 

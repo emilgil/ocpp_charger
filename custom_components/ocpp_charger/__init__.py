@@ -59,6 +59,7 @@ from .const import (
     DEFAULT_SCHEDULE_NIGHT_CURRENT,
     DEFAULT_SCHEDULE_NIGHT_START,
     VEHICLE_SOC_ENTITY,
+    CHARGE_MODE_IMMEDIATE,
     CHARGE_MODE_SMART,
     SWITCH_ALLOW_DAY_CHARGING,
     DAY_OFFER_EARLIEST_HOUR,
@@ -96,6 +97,9 @@ from .rest_client import ChargerRestClient
 from .charge_planner import (
     ChargePlan,
     plan_cheapest_window,
+    plan_immediate_window,
+    pick_immediate_power_kw,
+    immediate_window_wanted,
     is_next_day_shift,
     _to_utc,
     INTERVAL_MINUTES,
@@ -1481,7 +1485,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
     def set_charge_mode(self, mode: str) -> None:
         """Update charge mode."""
+        prev_mode = self.charge_mode
         self.charge_mode = mode
+        if prev_mode == CHARGE_MODE_IMMEDIATE and mode != CHARGE_MODE_IMMEDIATE:
+            # Bug 42: drop the Immediate window *before* replanning, so it can't
+            # linger if the Smart replan is skipped (e.g. RemoteStart freeze).
+            self._clear_immediate_plan()
         self._last_plan_update = None  # Bug 5: bypass throttle
         self._update_charge_plan()
         self.async_set_updated_data(self.ocpp.state)
@@ -1869,7 +1878,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("[ChargePlanner] Återställer _day_charging_dismissed efter midnatt")
             self._day_charging_dismissed = False
             self._day_charging_dismissed_until = None
-        if self._last_remote_start is not None:
+        # Bug 42: the freeze protects Smart auto-start/stop from oscillating. In Immediate
+        # the plan drives neither, so the window is allowed to stay live.
+        if self._last_remote_start is not None and self.charge_mode != CHARGE_MODE_IMMEDIATE:
             elapsed = (now - self._last_remote_start).total_seconds()
             if elapsed < 300:
                 _LOGGER.debug("[ChargePlanner] Frozen after RemoteStart (%.0fs < 300s), skipping recalc", elapsed)
@@ -1879,11 +1890,15 @@ class OCPPCoordinator(DataUpdateCoordinator):
         soc_reached = soc is not None and self.target_soc > 0 and soc >= self.target_soc
         kwh_reached = self.target_kwh > 0 and self.ocpp.state.energy_kwh >= self.target_kwh
         if soc_reached or kwh_reached:
+            if self.charge_mode == CHARGE_MODE_IMMEDIATE:
+                self._clear_immediate_plan()  # Bug 42: don't leave a finished window in the graph
             _LOGGER.debug("[ChargePlanner] Mål redan nått, hoppar över planering")
             return
 
-        # Throttle: only recalculate every 5 minutes
-        if self._last_plan_update is not None and (now - self._last_plan_update).total_seconds() < 300:
+        # Throttle: only recalculate every 5 minutes (Bug 42: every minute in Immediate,
+        # so the window's end tracks the remaining energy)
+        throttle_s = 60 if self.charge_mode == CHARGE_MODE_IMMEDIATE else 300
+        if self._last_plan_update is not None and (now - self._last_plan_update).total_seconds() < throttle_s:
             return
         self._last_plan_update = now
         from datetime import date, time as dtime
@@ -1995,6 +2010,15 @@ class OCPPCoordinator(DataUpdateCoordinator):
             current_soc, target_soc, energy_needed, power_kw,
             deadline_local.strftime("%Y-%m-%d %H:%M"),
         )
+
+        # ── Bug 42: Immediate mode ─────────────────────────────────────────────
+        # Immediate charges right away and ignores prices/deadline, so show one
+        # window from the session start to the projected end instead of Smart's
+        # cheapest slots. Returns before the day/night notices and the presence
+        # offer below, which are meaningless in Immediate.
+        if self.charge_mode == CHARGE_MODE_IMMEDIATE:
+            self._update_immediate_plan(energy_needed, power_kw, all_prices, now)
+            return
 
         # Build a schedule_fn that maps a local datetime -> current limit in A
         schedule = self.schedule
@@ -2404,6 +2428,60 @@ class OCPPCoordinator(DataUpdateCoordinator):
             )
 
         self._rebuild_charge_windows()  # Bug 24: sync charge-windows sensor immediately
+
+    def _update_immediate_plan(
+        self,
+        energy_needed: float,
+        power_kw: float,
+        all_prices: list,
+        now: datetime,
+    ) -> None:
+        """Bug 42: build the single Immediate-mode charge window.
+
+        Thin HA-glue around charge_planner.plan_immediate_window: the block runs
+        from the session's real start (``_charging_started_at``, Bug 34; "now"
+        before charging has started) to now + remaining energy / power. Uses the
+        measured power once charging has ramped up, else the schedule/vehicle
+        power computed by _update_charge_plan(). Nothing to show (cable out, car
+        satisfied, goal reached) → the window is cleared.
+        """
+        state = self.ocpp.state
+        goal_reached, _reason = self._charging_goal_reached()
+        if not immediate_window_wanted(
+            state.cable_connected, state.connector_status, goal_reached, energy_needed,
+        ):
+            self._clear_immediate_plan()
+            return
+
+        plan = plan_immediate_window(
+            all_prices,
+            energy_needed,
+            pick_immediate_power_kw(state.power_w, state.charging, power_kw),
+            now,
+            window_start=self._charging_started_at,
+        )
+        if not plan.feasible:
+            self._clear_immediate_plan()
+            return
+
+        self.charge_plan = plan
+        # Planner Savings compares the active plan with _alt_plan; an old Smart
+        # alternative would give a meaningless figure next to an Immediate plan.
+        self._alt_plan = None
+        self._rebuild_charge_windows()
+
+    def _clear_immediate_plan(self) -> None:
+        """Bug 42: drop the Immediate window from the plan and the Charge Windows sensor.
+
+        _rebuild_charge_windows() returns early for a None/infeasible plan and so
+        never clears the last built slots – they must be reset explicitly.
+        """
+        self.charge_plan = None
+        self._alt_plan = None
+        self._charge_windows = []
+        self._charge_windows_meta = {}
+        self._charge_windows_plan_ref = None
+        self._charge_windows_energy_at_slot_start = {}
 
     def _rebuild_charge_windows(self) -> None:
         """Feature 3: rebuild _charge_windows from the current charge_plan.

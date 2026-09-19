@@ -43,7 +43,7 @@ custom_components/ocpp_charger/
   vehicle_detection.py – Auto-identifiering av fordon
   current_schedule.py  – Dag/natt-schema
   smart_charge.py      – Prisbeslut (fallback när ingen plan finns) + estimate_completion_time (ETA; tester i tests/test_smart_charge_bug36.py)
-  charge_planner.py    – Optimal laddplanering baserat på spotpriser + is_next_day_shift (Bug 40, stdlib-only, testbar; tester i tests/test_bug40.py)
+  charge_planner.py    – Optimal laddplanering baserat på spotpriser + is_next_day_shift (Bug 40, stdlib-only, testbar; tester i tests/test_bug40.py) + plan_immediate_window/pick_immediate_power_kw/immediate_window_wanted (Bug 42; tester i tests/test_bug42.py)
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
   deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi; golvar mot färsk rapporterad SoC (Bug 38) (stdlib-only, testbar)
@@ -55,7 +55,8 @@ custom_components/ocpp_charger/
 ```
 
 ## Arkitektur – laddningsstyrning (prioritetsordning)
-1. **Charge mode = Immediate** → ladda alltid
+1. **Charge mode = Immediate** → ladda alltid. Planen/Charge Windows visar ett enda block
+   sessionsstart → beräknad sluttid (Bug 42), inte Smart-planens billigaste luckor; den styr inte start/stopp.
 2. **Charge mode = Smart + `price_cap_ore_kwh > 0`** → pristaksläge (Feature 5): planen byggs
    av alla slots ≤ taket via `_update_price_cap_plan()` istället för cheapest-window-planeraren.
    Resten (auto-start/stopp inom `plan.active_intervals`, SoC-stopp) är identiskt.
@@ -69,7 +70,7 @@ custom_components/ocpp_charger/
 Dessa setters anropar `_update_charge_plan()` direkt:
 - `set_target_soc()`, `set_target_kwh()`
 - `set_allow_day_charging()`
-- `set_charge_mode()`
+- `set_charge_mode()` (rensar Immediate-fönstret vid byte bort från Immediate, Bug 42)
 - `set_price_cap()` (Feature 5 – async; sparar även Store)
 - `set_active_vehicle()` (även `_update_soc_from_ha()` + reset `_session_total_kwh` vid fordonsbyte)
 
@@ -114,6 +115,33 @@ Bug 33/Fix 7:s legitima ackumulering inom samma bils session.
 
 ### Dag-till-nästa-dag-hopp-vakt (Bug 40)
 Kompletterar Bug 28 för fasen **innan** en session startat (kabel inkopplad, väntar på fönstret). När morgondagens priser publiceras utökar `compute_deadline()` (helg/`allow_day_charging`-grenen) horisonten ett helt dygn, och `plan_cheapest_window()` kan då skjuta upp dagens redan valda fönster ett dygn för en försumbar besparing – loggen visar bara `%H:%M` så det ser ut som att fönstret försvann. `is_next_day_shift(prev_plan, new_plan, now_local, local_tz, *, cable_connected)` (ren funktion i `charge_planner.py`, testad i `tests/test_bug40.py`) upptäcker hoppet: förra planen börjar **idag**, båda feasible, kabel inkopplad, och nya fönstrets start-dag ligger **efter förra planens *slut*-dag** (slut- inte start-dag → en vardagsnatt som glider "22:00 idag"→"02:00 imorgon" före samma 06:00-deadline räknas inte). Vid hopp håller `_update_charge_plan()` kvar `prev_plan` och skickar `on_next_day_shift_choice`-notisen (knappar 🔌 Ladda idag / ⏳ Vänta till imorgon) **en gång**. `_next_day_shift_hold` (sticky för kalenderdygnet, speglar `_day_charging_dismissed`-mönstret) håller planen utan att spamma tills användaren svarar / hoppet upphör / kabel ur / midnatt. `KEEP_TODAY` låser hållet; `WAIT_TOMORROW` byter in `_next_day_shift_candidate` direkt om ingen laddning pågår, annars sätts `_next_day_shift_accepted` och den nya planen tas i bruk först när den aktiva sessionen avslutats naturligt (mål / kabel ur / prishål) – en notisknapp får aldrig avbryta pågående laddning (Bug 28). Alla tre flaggor nollställs i `Available`-blocket. Pristaksläget (Feature 5) returnerar före vakten och berörs inte.
+
+### Immediate-fönster (Bug 42)
+`_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
+`Laddfönster`-grafen/`charge_windows`-sensorn Smart-planens billigaste luckor fast bilen laddade direkt
+(styrningen ignorerar planen i Immediate – "Immediate läge aktivt"). Nu byggs i stället **ett** block
+`[sessionens starttid, nu + återstående energi / effekt]` av `plan_immediate_window()` (ren, stdlib-only,
+`tests/test_bug42.py`). Hooken ligger i `_update_charge_plan()` direkt efter `energy_needed`/`power_kw`
+och returnerar före dag/natt-notiserna och närvaro-erbjudandet (meningslösa i Immediate).
+- **Effekt:** `pick_immediate_power_kw()` – uppmätt `power_w/1000` när `charging` och `power_w >= 1000`
+  (skydd mot ramp-up), annars schema/fordonsgräns (`power_kw` från `_update_charge_plan()`).
+- **Vänsterkant:** `_charging_started_at` (Bug 34), före laddstart "nu". Klampas till högst `now`.
+- **Semantik (Bug 29):** `energy_kwh`/`estimated_cost_sek`/`duration_minutes`/`intervals` gäller
+  *återstående* laddning från nu; bara `start`/`active_intervals` sträcker sig bakåt. `duration_minutes` måste
+  vara återstående tid eftersom `_update_eta()` återanvänder den. Slot-`time` klipps till `max(slot_start, now)`
+  så `build_charge_windows()` (`iv_start <= time < iv_end`) behåller sloten som innehåller `now` (jfr Bug 22).
+- **När visas fönstret:** `immediate_window_wanted()` – kabel inkopplad, `connector_status != SuspendedEV`,
+  målet inte nått (`_charging_goal_reached()`), `energy_needed > 0` (gäller även `Preparing`/`SuspendedEVSE`).
+  Annars `_clear_immediate_plan()` (nollar plan, `_alt_plan` och alla `_charge_windows*`-fält – `_rebuild_charge_windows()`
+  rensar aldrig själv för `None`/infeasible plan).
+- **Lägesmedvetna tidiga returer i `_update_charge_plan()`:** 300 s-RemoteStart-frysen hoppas över i Immediate
+  (planen styr inte start/stopp → ingen pingpong-risk), "mål redan nått" rensar fönstret, throttle 60 s (annars 300 s).
+- **`set_charge_mode()`** rensar Immediate-fönstret *före* `_update_charge_plan()` när man lämnar Immediate.
+- `_alt_plan = None` i Immediate (Planner Savings skulle annars jämföra mot en gammal Smart-alternativplan).
+- **Rör inte** `_update_smart_charging()`/styrlogiken, kortet, Bug 28-frysningen eller pristaksläget (Feature 5).
+- **Kända begränsningar:** `_charging_started_at` persisteras inte → HA-omstart mitt i laddning flyttar
+  vänsterkanten till omstartstiden (och skickar om start-notisen); första planen efter omstart körs före `_load_state()`
+  och kan vara för lång i ~2 min; `actual_energy_kwh` fylls inte i för Immediate-block.
 
 ## Nyckelkonstanter (const.py)
 ```python
@@ -320,7 +348,9 @@ omräkning, inte varje 10s-cykel. Energikälla: `_cable_session_energy_kwh` (+ a
 Snapshots i `_charge_windows_energy_at_slot_start` nycklas på slot-start-ISO.
 
 `native_value` = antal slots; attribut = plan-metadata + `slots`-lista. OBS: vid infeasible/ingen plan
-behålls senaste slots (rensas ej) – `calculated_at` visar åldern.
+behålls senaste slots (rensas ej) – `calculated_at` visar åldern. Undantag (Bug 42): i Immediate rensas
+slots explicit via `_clear_immediate_plan()` när inget fönster ska visas (kabel ur, `SuspendedEV`, mål nått,
+byte till annat läge).
 
 ## Manuell deadline (Feature 4 → Feature 6)
 Den manuella laddningsdeadlinen sätts via HA-helpern `input_datetime.charger_target_time`
