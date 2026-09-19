@@ -34,6 +34,7 @@ ACTION_REMOTE_STOP = "RemoteStopTransaction"
 ACTION_SET_CHARGING_PROFILE = "SetChargingProfile"
 ACTION_CLEAR_CHARGING_PROFILE = "ClearChargingProfile"
 ACTION_GET_CONFIGURATION = "GetConfiguration"
+ACTION_GET_COMPOSITE_SCHEDULE = "GetCompositeSchedule"
 ACTION_DATA_TRANSFER = "DataTransfer"
 ACTION_TRIGGER_MESSAGE = "TriggerMessage"
 
@@ -659,6 +660,42 @@ class OCPPClient:
         except Exception as err:
             _LOGGER.error("[OCPP] GetConfiguration failed: %s", err)
             return {"configuration_key": [], "unknown_key": [], "error": str(err)}
+
+    async def get_composite_schedule(
+        self,
+        connector_id: int = 1,
+        duration: int = 3600,
+        charging_rate_unit: str = "A",
+    ) -> dict:
+        """Send GetCompositeSchedule and return the schedule the charger applies.
+
+        connector_id 0 = hela laddpunkten, 1 = kontakten. Läser bara – ändrar inget.
+        """
+        payload = {
+            "connectorId": connector_id,
+            "duration": duration,
+            "chargingRateUnit": charging_rate_unit,
+        }
+        try:
+            result = await self._send_call(ACTION_GET_COMPOSITE_SCHEDULE, payload)
+            status = result.get("status", "Rejected")
+            _LOGGER.info(
+                "[OCPP] GetCompositeSchedule connector=%s duration=%s → %s",
+                connector_id, duration, status,
+            )
+            _LOGGER.info(
+                "[OCPP] GetCompositeSchedule svar: %s",
+                json.dumps(result, default=str),
+            )
+            return {
+                "status": status,
+                "connector_id": result.get("connectorId", connector_id),
+                "schedule_start": result.get("scheduleStart"),
+                "charging_schedule": result.get("chargingSchedule"),
+            }
+        except Exception as err:
+            _LOGGER.error("[OCPP] GetCompositeSchedule failed: %s", err)
+            return {"status": "Error", "error": str(err)}
 
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
