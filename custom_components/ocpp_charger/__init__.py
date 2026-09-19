@@ -110,6 +110,7 @@ from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline, helper_state_to_hhmm
 from .soc_estimate import estimate_soc
 from .charging_start import restore_charging_start, serialize_charging_start
+from .clear_profile import parse_clear_request, refused_result
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
 
@@ -300,41 +301,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             {**result, "action": "GetCompositeSchedule", "entry_id": entry.entry_id},
         )
 
-    def _opt_int(value):
-        """None/tom sträng → None, annars int (0 är ett giltigt värde)."""
-        if value is None or value == "":
-            return None
-        return int(value)
-
     async def _handle_clear_charging_profile(call) -> None:
         coord: OCPPCoordinator = hass.data[DOMAIN][entry.entry_id]
-        profile_id   = _opt_int(call.data.get("profile_id"))
-        connector_id = _opt_int(call.data.get("connector_id"))
-        stack_level  = _opt_int(call.data.get("stack_level"))
-        purpose      = call.data.get("purpose") or None
-
-        no_filter = (
-            profile_id is None and connector_id is None
-            and stack_level is None and not purpose
-        )
-        if no_filter and not call.data.get("confirm_clear_all", False):
+        request = parse_clear_request(call.data)
+        if request is None:
             _LOGGER.warning(
                 "[OCPP] clear_charging_profile utan filter avvisad – "
                 "sätt confirm_clear_all: true för att rensa ALLA profiler"
             )
-            result = {
-                "status": "Refused",
-                "request": {},
-                "error": "Inga filter angivna. Sätt confirm_clear_all: true "
-                         "för att rensa alla profiler.",
-            }
+            result = refused_result()
         else:
-            result = await coord.ocpp.clear_charging_profile(
-                profile_id=profile_id,
-                connector_id=connector_id,
-                purpose=purpose,
-                stack_level=stack_level,
-            )
+            result = await coord.ocpp.clear_charging_profile(**request)
         hass.bus.async_fire(
             f"{DOMAIN}_ocpp_response",
             {**result, "action": "ClearChargingProfile", "entry_id": entry.entry_id},

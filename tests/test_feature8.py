@@ -5,6 +5,7 @@ Körs fristående utan Home Assistant:
 
 ocpp_client.py importerar bara stdlib + websockets, så modulkatalogen läggs på sys.path och
 modulen importeras direkt (paketets __init__.py drar in HA och ska INTE importeras).
+clear_profile.py är ren stdlib och importeras på samma sätt.
 OCPPClient._send_call byts mot en stub som spelar in (action, payload) och returnerar ett
 färdigt svar – ingen websocket behövs. Förväntade värden är handskrivna litteraler.
 """
@@ -18,6 +19,7 @@ import yaml  # PyYAML – ingår i HA:s beroenden (HA-venv) och finns i systempy
 PKG = Path(__file__).resolve().parents[1] / "custom_components" / "ocpp_charger"
 sys.path.insert(0, str(PKG))
 import ocpp_client as oc  # noqa: E402
+import clear_profile as cpf  # noqa: E402
 
 
 def make_client():
@@ -257,15 +259,32 @@ def _service_name(node):
     raise AssertionError(f"oväntat tjänsteargument: {ast.dump(node)}")
 
 
-def test_handlers_read_exactly_the_fields_services_yaml_declares():
-    tree = _init_tree()
-    services = load_services()
-    for handler, service in (
-        ("_handle_get_composite_schedule", "get_composite_schedule"),
-        ("_handle_clear_charging_profile", "clear_charging_profile"),
-    ):
-        keys = _call_data_keys(_find_function(tree, handler))
-        assert keys == set(services[service]["fields"]), handler
+def test_get_handler_reads_exactly_the_fields_services_yaml_declares():
+    # Clear-tjänstens fältkontrakt testas beteendemässigt i
+    # test_clear_request_parser_honours_every_field_services_yaml_declares.
+    keys = _call_data_keys(_find_function(_init_tree(), "_handle_get_composite_schedule"))
+    assert keys == set(load_services()["get_composite_schedule"]["fields"])
+
+
+def test_clear_handler_delegates_to_the_tested_parser():
+    # Handlern får inte tolka call.data själv – då går den testade vakten i clear_profile.py runt.
+    func = _find_function(_init_tree(), "_handle_clear_charging_profile")
+    called = {
+        n.func.id
+        for n in ast.walk(func)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert "parse_clear_request" in called, "handlern anropar inte parse_clear_request"
+    assert "refused_result" in called, "handlern anropar inte refused_result"
+    assert _call_data_keys(func) == set(), "handlern läser call.data.get(...) direkt"
+    # Utan importen ger varje anrop NameError först i drift – ast-testet ovan ser det inte.
+    imported = {
+        alias.name
+        for n in ast.walk(_init_tree())
+        if isinstance(n, ast.ImportFrom) and n.module == "clear_profile" and n.level == 1
+        for alias in n.names
+    }
+    assert {"parse_clear_request", "refused_result"} <= imported, imported
 
 
 def test_every_registered_service_is_removed_on_unload():
@@ -284,6 +303,145 @@ def test_every_registered_service_is_removed_on_unload():
             removed |= {_service_name(e) for e in n.iter.elts}
     assert {"get_composite_schedule", "clear_charging_profile"} <= registered
     assert registered == removed
+
+
+# ── clear_profile.py: tolkning av service-data + vakt mot "rensa allt" ──────────
+# HA varken validerar eller konverterar service-data, så värden kan vara strängar ("off",
+# "false", "0") – de får aldrig tolkas som ett ja bara för att strängen är icke-tom.
+
+
+def test_opt_int_treats_none_and_empty_string_as_no_value():
+    assert cpf.opt_int(None) is None
+    assert cpf.opt_int("") is None
+
+
+def test_opt_int_keeps_zero_and_converts_numbers():
+    # 0 är ett riktigt värde (connectorId 0 = hela laddpunkten) och får inte bli "inget filter".
+    assert cpf.opt_int(0) == 0 and cpf.opt_int(0) is not None
+    assert cpf.opt_int(0.0) == 0
+    assert cpf.opt_int("0") == 0
+    assert cpf.opt_int("7") == 7
+    assert cpf.opt_int(7.0) == 7
+
+
+def test_opt_int_does_not_swallow_garbage():
+    raised = False
+    try:
+        cpf.opt_int("abc")
+    except ValueError:
+        raised = True
+    assert raised, "opt_int('abc') skulle ha kastat ValueError"
+
+
+def test_confirm_accepts_only_an_explicit_yes():
+    for value in (True, "true", "TRUE", " yes ", "on", "On"):
+        assert cpf.parse_confirm(value) is True, repr(value)
+
+
+def test_confirm_rejects_everything_else():
+    # Inklusive de sanna strängarna "false"/"off"/"no" och alla tal (fail-safe).
+    for value in (False, None, "", 0, 1, 1.0, "false", "off", "no", "0", "1", "maybe", [], {}):
+        assert cpf.parse_confirm(value) is False, repr(value)
+
+
+def test_clear_request_without_filter_or_confirmation_is_refused():
+    for data in ({}, {"confirm_clear_all": False}, {"purpose": ""}, {"profile_id": None, "connector_id": ""}):
+        assert cpf.parse_clear_request(data) is None, data
+
+
+def test_clear_request_with_falsy_confirmation_is_still_refused():
+    # Regression (slutgranskningen): "off"/"false" är sanna strängar och bekräftade tidigare.
+    for value in ("false", "off", "no", "0", 0):
+        assert cpf.parse_clear_request({"confirm_clear_all": value}) is None, repr(value)
+
+
+def test_clear_request_with_explicit_confirmation_and_no_filter_clears_all():
+    everything = {"profile_id": None, "connector_id": None, "purpose": None, "stack_level": None}
+    assert cpf.parse_clear_request({"confirm_clear_all": True}) == everything
+    assert cpf.parse_clear_request({"confirm_clear_all": "on"}) == everything
+
+
+def test_clear_request_maps_each_filter_to_the_right_key():
+    assert cpf.parse_clear_request({"profile_id": 5}) == {
+        "profile_id": 5, "connector_id": None, "purpose": None, "stack_level": None,
+    }
+    assert cpf.parse_clear_request({"connector_id": 1}) == {
+        "profile_id": None, "connector_id": 1, "purpose": None, "stack_level": None,
+    }
+    assert cpf.parse_clear_request({"purpose": "TxDefaultProfile"}) == {
+        "profile_id": None, "connector_id": None, "purpose": "TxDefaultProfile", "stack_level": None,
+    }
+    assert cpf.parse_clear_request({"stack_level": 2}) == {
+        "profile_id": None, "connector_id": None, "purpose": None, "stack_level": 2,
+    }
+
+
+def test_clear_request_treats_zero_as_a_real_filter():
+    # Ett smalt filter med värdet 0 får varken bli "inget filter" eller kräva bekräftelse.
+    for key, raw in (
+        ("connector_id", 0), ("profile_id", 0), ("stack_level", 0),
+        ("connector_id", 0.0), ("connector_id", "0"),
+    ):
+        result = cpf.parse_clear_request({key: raw})
+        assert result is not None, (key, raw)
+        expected = {"profile_id": None, "connector_id": None, "purpose": None, "stack_level": None}
+        expected[key] = 0
+        assert result == expected, (key, raw)
+
+
+def test_clear_request_with_a_filter_does_not_need_confirmation():
+    assert cpf.parse_clear_request({"purpose": "TxProfile", "confirm_clear_all": False}) == {
+        "profile_id": None, "connector_id": None, "purpose": "TxProfile", "stack_level": None,
+    }
+
+
+def test_clear_request_coerces_numeric_filters_to_int():
+    result = cpf.parse_clear_request({"profile_id": "5", "connector_id": 1.0, "stack_level": "2"})
+    assert result == {"profile_id": 5, "connector_id": 1, "purpose": None, "stack_level": 2}
+    for key in ("profile_id", "connector_id", "stack_level"):
+        assert type(result[key]) is int, key
+
+
+def test_clear_request_propagates_invalid_numbers():
+    # Skräp får inte tyst bli "inget filter" (och därmed en avvisning eller, värre, en rensning).
+    raised = False
+    try:
+        cpf.parse_clear_request({"profile_id": "abc"})
+    except ValueError:
+        raised = True
+    assert raised, "parse_clear_request({'profile_id': 'abc'}) skulle ha kastat ValueError"
+
+
+def test_refused_result_is_the_documented_shape_and_fresh():
+    expected = {
+        "status": "Refused",
+        "request": {},
+        "error": "Inga filter angivna. Sätt confirm_clear_all: true för att rensa alla profiler.",
+    }
+    first, second = cpf.refused_result(), cpf.refused_result()
+    assert first == expected
+    assert second == expected
+    assert first is not second
+    assert first["request"] is not second["request"]
+
+
+def test_clear_request_parser_honours_every_field_services_yaml_declares():
+    samples = {
+        "profile_id": 5,
+        "connector_id": 1,
+        "purpose": "TxProfile",
+        "stack_level": 2,
+        "confirm_clear_all": True,
+    }
+    filters = ("profile_id", "connector_id", "purpose", "stack_level")
+    for name in load_services()["clear_charging_profile"]["fields"]:
+        assert name in samples, (
+            f"services.yaml deklarerar fältet {name!r} men testet saknar exempelvärde – lägg till det"
+        )
+        result = cpf.parse_clear_request({name: samples[name]})
+        assert result is not None, name
+        if name in filters:
+            assert result[name] == samples[name], name
 
 
 if __name__ == "__main__":
