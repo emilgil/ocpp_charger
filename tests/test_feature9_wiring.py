@@ -20,6 +20,7 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parents[1] / "custom_components" / "ocpp_charger"
 sys.path.insert(0, str(PKG))
 import const  # noqa: E402  (const.py saknar imports)
+import logging_setup  # noqa: E402  (ren stdlib)
 
 
 def _tree(name):
@@ -66,6 +67,24 @@ def _executor_jobs(func):
     return jobs
 
 
+def _awaited_executor_jobs(func):
+    """{'logging_setup.apply_logging': ['log_cfg', ...], ...}: modul.funk -> källtext för övriga argument,
+    för varje `await hass.async_add_executor_job(<modul>.<funk>, ...)` i funktionen (bara awaitade anrop)."""
+    jobs = {}
+    for node in ast.walk(func):
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
+            call = node.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "async_add_executor_job"
+                and call.args
+                and isinstance(call.args[0], ast.Attribute)
+                and isinstance(call.args[0].value, ast.Name)
+            ):
+                jobs[f"{call.args[0].value.id}.{call.args[0].attr}"] = [ast.unparse(a) for a in call.args[1:]]
+    return jobs
+
+
 def _first_call_line(func, predicate):
     lines = [n.lineno for n in ast.walk(func) if isinstance(n, ast.Call) and predicate(n)]
     assert lines, "anropet hittades inte"
@@ -108,7 +127,11 @@ def test_setup_applies_logging_via_executor_before_the_coordinator_exists():
     assert jobs["logging_setup.apply_logging"] < coordinator_line  # uppstartsloggar hamnar rätt
     body = ast.unparse(func)
     assert "logging_setup.config_from_entry_data(entry.data)" in body
-    assert "hass.config.path(LOG_FILE_NAME)" in body
+    # Awaitat, och i rätt argumentordning (config först, sedan sökvägen) – annars körs det aldrig / fel.
+    assert _awaited_executor_jobs(func)["logging_setup.apply_logging"] == [
+        "log_cfg",
+        "hass.config.path(LOG_FILE_NAME)",
+    ]
 
 
 def test_unload_removes_logging_via_executor_after_the_coordinator_stopped():
@@ -119,21 +142,43 @@ def test_unload_removes_logging_via_executor_after_the_coordinator_stopped():
         func, lambda n: isinstance(n.func, ast.Attribute) and n.func.attr == "async_stop"
     )
     assert stop_line < jobs["logging_setup.remove_logging"]  # stoppmeddelandena hinner loggas
+    assert _awaited_executor_jobs(func)["logging_setup.remove_logging"] == []  # awaitat, utan argument
+
+
+def test_init_imports_log_file_name_from_const():
+    # Saknas importen kraschar async_setup_entry med NameError och hela integrationen laddas inte.
+    assert "LOG_FILE_NAME" in _names_imported_from_const("__init__.py")
 
 
 # ── config_flow.py: options-flow-steget edit_logging ──────────────────────────
 
 
 class _Marker:
-    """voluptuous.Optional/Required-ersättning: nyckel + default."""
+    """voluptuous.Optional/Required-ersättning: nyckel, default och description."""
 
-    def __init__(self, key, default=None):
+    def __init__(self, key, default=None, description=None):
         self.schema = key
         self.default = default
+        self.description = description
+
+
+class _FakeSchema:
+    """voluptuous.Schema-ersättning. Anropet fyller i default för utelämnade nycklar precis som riktiga
+    voluptuous. HA:s frontend utelämnar tomma fält, så det är så ett rensat fält ser ut för flödet."""
+
+    def __init__(self, mapping):
+        self.schema = mapping
+
+    def __call__(self, data):
+        result = dict(data)
+        for marker in self.schema:
+            if marker.schema not in result and marker.default is not None:
+                result[marker.schema] = marker.default
+        return result
 
 
 FAKE_VOL = types.SimpleNamespace(
-    Schema=lambda mapping: types.SimpleNamespace(schema=mapping),
+    Schema=_FakeSchema,
     Optional=_Marker,
     Required=_Marker,
     All=lambda *validators: ("All", validators),
@@ -160,7 +205,8 @@ def _make_flow(entry_data):
         for n in _tree("config_flow.py").body
         if isinstance(n, ast.ClassDef) and n.name == "OCPPChargerOptionsFlow"
     )
-    namespace = {name: getattr(const, name) for name in dir(const) if not name.startswith("_")}
+    # Bara namn som config_flow.py själv importerar ur const – saknas en import blir det NameError här.
+    namespace = {name: getattr(const, name) for name in _names_imported_from_const("config_flow.py")}
     namespace.update(
         vol=FAKE_VOL,
         copy=copy,
@@ -187,8 +233,11 @@ def _make_flow(entry_data):
 
 
 def _fields(form):
-    """{fältnamn: (default, validator)} ur ett fejkat formulär."""
-    return {m.schema: (m.default, v) for m, v in form["data_schema"].schema.items()}
+    """{fältnamn: (default, suggested_value, validator)} ur ett fejkat formulär."""
+    return {
+        m.schema: (m.default, (m.description or {}).get("suggested_value"), v)
+        for m, v in form["data_schema"].schema.items()
+    }
 
 
 def test_menu_offers_logging_just_before_done():
@@ -205,30 +254,43 @@ def test_selecting_logging_opens_the_edit_logging_step():
     assert form["type"] == "form" and form["step_id"] == "edit_logging"
 
 
-def test_edit_logging_form_uses_the_current_values_as_defaults():
+def test_edit_logging_form_prefills_the_current_values():
     flow, _, _ = _make_flow(
         {"log_verbose_ha": True, "syslog_host": "graylog.lan", "syslog_port": 2514, "syslog_level": "WARNING"}
     )
     form = asyncio.run(flow.async_step_edit_logging())
     assert form["step_id"] == "edit_logging"
     assert _fields(form) == {
-        "log_verbose_ha": (True, bool),
-        "syslog_host": ("graylog.lan", str),
-        "syslog_port": (2514, ("All", (("Coerce", int), ("Range", {"min": 1, "max": 65535})))),
-        "syslog_level": ("WARNING", ("In", ["DEBUG", "INFO", "WARNING", "ERROR"])),
+        "log_verbose_ha": (True, None, bool),
+        "syslog_host": (None, "graylog.lan", str),  # förifylld men utan default (se testet längre ner)
+        "syslog_port": (2514, None, ("All", (("Coerce", int), ("Range", {"min": 1, "max": 65535})))),
+        "syslog_level": ("WARNING", None, ("In", ["DEBUG", "INFO", "WARNING", "ERROR"])),
     }
 
 
 def test_edit_logging_form_defaults_for_an_install_without_the_keys():
     flow, _, _ = _make_flow({})
-    form = asyncio.run(flow.async_step_edit_logging())
-    defaults = {key: default for key, (default, _) in _fields(form).items()}
-    assert defaults == {
+    fields = _fields(asyncio.run(flow.async_step_edit_logging()))
+    assert {key: default for key, (default, _, _) in fields.items()} == {
         "log_verbose_ha": False,
-        "syslog_host": "",
+        "syslog_host": None,  # ingen default på värden
         "syslog_port": 1514,
         "syslog_level": "DEBUG",
     }
+    assert fields["syslog_host"][1] == ""  # men fältet förifylls tomt
+
+
+def test_clearing_the_syslog_host_turns_syslog_off():
+    # HA:s frontend skickar inte tomma fält. Med default= fyllde voluptuous i den gamla värden igen och
+    # "tomt = av" gick inte att nå; utan default utelämnas nyckeln och .get(..., "") ger "".
+    flow, updates, _ = _make_flow({"syslog_host": "graylog.lan", "syslog_port": 2514})
+    form = asyncio.run(flow.async_step_edit_logging())
+    submitted = form["data_schema"]({"log_verbose_ha": False, "syslog_port": 2514, "syslog_level": "DEBUG"})
+    assert "syslog_host" not in submitted  # värden rensades i UI:t → inget att fylla i
+    asyncio.run(flow.async_step_edit_logging(submitted))
+    asyncio.run(flow.async_step_init({"action": "done"}))
+    assert updates[0]["syslog_host"] == ""
+    assert logging_setup.config_from_entry_data(updates[0]).syslog_host == ""  # → syslog av
 
 
 def test_submit_trims_the_host_returns_to_the_menu_and_save_merges_it():

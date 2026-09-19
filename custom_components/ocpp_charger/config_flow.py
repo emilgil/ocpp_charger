@@ -629,8 +629,11 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         schema = vol.Schema({
             vol.Optional(CONF_LOG_VERBOSE_HA,
                 default=cfg.get(CONF_LOG_VERBOSE_HA, False)): bool,
+            # Ingen default=: HA-frontend skickar inte tomma fält, så voluptuous fyllde i den gamla
+            # värden igen och "tomt = av" gick inte att nå. suggested_value förifyller fältet utan att
+            # ge det ett värde när det lämnas tomt (nyckeln utelämnas → .get(..., "") → syslog av).
             vol.Optional(CONF_SYSLOG_HOST,
-                default=cfg.get(CONF_SYSLOG_HOST, "")): str,
+                description={"suggested_value": cfg.get(CONF_SYSLOG_HOST, "")}): str,
             vol.Optional(CONF_SYSLOG_PORT,
                 default=cfg.get(CONF_SYSLOG_PORT, DEFAULT_SYSLOG_PORT)): vol.All(
                     vol.Coerce(int), vol.Range(min=1, max=65535)),
