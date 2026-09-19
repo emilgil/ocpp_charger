@@ -138,6 +138,16 @@
         "data": {
           "price_forecast_entity": "Price forecast entity (e.g. sensor.gespot_current_price_se3)"
         }
+      },
+      "edit_logging": {
+        "title": "Loggning",
+        "description": "Hela loggen skrivs alltid till ocpp_charger_debug.log (ny fil varje dygn, 14 dygn sparas). Välj vad mer som ska skickas.",
+        "data": {
+          "log_verbose_ha": "Skicka allt till Home Assistants logg (standard: bara varningar och fel)",
+          "syslog_host": "Syslog-värd (IP eller värdnamn, tomt = av)",
+          "syslog_port": "Syslog UDP-port",
+          "syslog_level": "Lägsta nivå som skickas till syslog"
+        }
       }
     },
     "error": {

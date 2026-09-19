@@ -24,6 +24,7 @@ from .const import (
     CONF_CHARGER_ID,
     CONF_ELECTRICITY_PRICE_ENTITY,
     CONF_HOST,
+    CONF_LOG_VERBOSE_HA,
     CONF_MAX_CURRENT,
     CONF_MQTT_TOPIC_PREFIX,
     CONF_PRICE_FORECAST_ENTITY,
@@ -50,6 +51,9 @@ from .const import (
     CONF_SCHEDULE_NIGHT_START,
     CONF_SOC_ENTITY,
     CONF_SOC_UNIT,
+    CONF_SYSLOG_HOST,
+    CONF_SYSLOG_LEVEL,
+    CONF_SYSLOG_PORT,
     VEHICLE_SOC_UNIT,
     VEHICLE_MAX_CURRENT_A,
     SOC_UNITS,
@@ -64,6 +68,8 @@ from .const import (
     DEFAULT_SCHEDULE_DAY_START,
     DEFAULT_SCHEDULE_NIGHT_CURRENT,
     DEFAULT_SCHEDULE_NIGHT_START,
+    DEFAULT_SYSLOG_LEVEL,
+    DEFAULT_SYSLOG_PORT,
     DOMAIN,
     VEHICLE_CAPACITY,
     VEHICLE_NAME,
@@ -336,6 +342,7 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         self._rest_data: dict = {}
         self._planner_data: dict = {}
         self._notify_data: dict = {}
+        self._logging_data: dict = {}
         self._vehicles: list[dict] = copy.deepcopy(
             config_entry.data.get(CONF_VEHICLES, [])
         )
@@ -365,6 +372,8 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_edit_planner()
             elif action == "notify":
                 return await self.async_step_edit_notify()
+            elif action == "logging":
+                return await self.async_step_edit_logging()
             elif action == "done":
                 return self._save()
 
@@ -379,6 +388,7 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         choices["rest"]     = "🔌 Edit REST API settings"
         choices["planner"]  = "📅 Edit charge planner settings"
         choices["notify"]   = "🔔 Edit notification settings"
+        choices["logging"]  = "📝 Edit logging settings"
         choices["done"]     = "✅ Save and close"
 
         schema = vol.Schema({vol.Required("action"): vol.In(choices)})
@@ -606,6 +616,30 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         })
         return self.async_show_form(step_id="edit_notify", data_schema=schema)
 
+    async def async_step_edit_logging(
+        self, user_input: dict | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            user_input = dict(user_input)
+            user_input[CONF_SYSLOG_HOST] = user_input.get(CONF_SYSLOG_HOST, "").strip()
+            self._logging_data = user_input
+            return await self.async_step_init()
+
+        cfg = self._config_entry.data
+        schema = vol.Schema({
+            vol.Optional(CONF_LOG_VERBOSE_HA,
+                default=cfg.get(CONF_LOG_VERBOSE_HA, False)): bool,
+            vol.Optional(CONF_SYSLOG_HOST,
+                default=cfg.get(CONF_SYSLOG_HOST, "")): str,
+            vol.Optional(CONF_SYSLOG_PORT,
+                default=cfg.get(CONF_SYSLOG_PORT, DEFAULT_SYSLOG_PORT)): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=65535)),
+            vol.Optional(CONF_SYSLOG_LEVEL,
+                default=cfg.get(CONF_SYSLOG_LEVEL, DEFAULT_SYSLOG_LEVEL)): vol.In(
+                    ["DEBUG", "INFO", "WARNING", "ERROR"]),
+        })
+        return self.async_show_form(step_id="edit_logging", data_schema=schema)
+
     def _save(self) -> FlowResult:
         """Persist updated vehicle list and schedule back into config entry data."""
         new_data = dict(self._config_entry.data)
@@ -620,6 +654,8 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
             new_data.update(self._planner_data)
         if hasattr(self, "_notify_data"):
             new_data.update(self._notify_data)
+        if hasattr(self, "_logging_data"):
+            new_data.update(self._logging_data)
         self.hass.config_entries.async_update_entry(
             self._config_entry, data=new_data
         )

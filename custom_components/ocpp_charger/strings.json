@@ -138,6 +138,16 @@
         "data": {
           "price_forecast_entity": "Price forecast entity (e.g. sensor.gespot_current_price_se3)"
         }
+      },
+      "edit_logging": {
+        "title": "Logging Settings",
+        "description": "Full log always goes to ocpp_charger_debug.log (daily rotation, 14 days). Choose what else to send.",
+        "data": {
+          "log_verbose_ha": "Send everything to the Home Assistant log (default: warnings and errors only)",
+          "syslog_host": "Syslog host (IP or hostname, empty = off)",
+          "syslog_port": "Syslog UDP port",
+          "syslog_level": "Minimum level sent to syslog"
+        }
       }
     },
     "error": {
