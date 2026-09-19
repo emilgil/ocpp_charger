@@ -173,6 +173,17 @@ CONF_NOTIFY_ON_STOP        = "notify_on_stop"
 CONF_NOTIFY_DASHBOARD_URL  = "notify_dashboard_url"
 DEFAULT_NOTIFY_TARGET      = ""
 
+# Logging (Feature 9): separat loggfil, tystare HA-logg, valfri syslog-UDP (Graylog)
+CONF_LOG_VERBOSE_HA = "log_verbose_ha"     # bool, standard False
+CONF_SYSLOG_HOST    = "syslog_host"        # str, tom = syslog av
+CONF_SYSLOG_PORT    = "syslog_port"        # int
+CONF_SYSLOG_LEVEL   = "syslog_level"       # "DEBUG"|"INFO"|"WARNING"|"ERROR"
+
+DEFAULT_SYSLOG_PORT  = 1514                # Graylog Syslog UDP-input (icke-root)
+DEFAULT_SYSLOG_LEVEL = "DEBUG"
+LOG_FILE_NAME        = "ocpp_charger_debug.log"
+LOG_BACKUP_DAYS      = 14
+
 # SOC entity unit
 CONF_SOC_UNIT   = "soc_unit"
 VEHICLE_SOC_UNIT = "soc_unit"
