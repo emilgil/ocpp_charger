@@ -23,10 +23,10 @@ scp custom_components/ocpp_charger/services.yaml root@192.168.1.97:/config/custo
 # Starta om HA
 ssh root@192.168.1.97 "ha core restart"
 
-# Följ loggen
+# Följ loggen (HA-loggen har bara WARNING/ERROR från komponenten – allt finns i debugfilen nedan)
 ssh root@192.168.1.97 "grep -i ocpp_charger /config/home-assistant.log | tail -30"
 
-# Debug-logg (mer verbose, roterande fil)
+# Debug-logg (alla nivåer, ny fil varje dygn, 14 dygn; äldre dygn: ocpp_charger_debug.log.YYYY-MM-DD)
 ssh root@192.168.1.97 "tail -f /config/ocpp_charger_debug.log"
 ```
 
@@ -57,6 +57,7 @@ custom_components/ocpp_charger/
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi; golvar mot färsk rapporterad SoC (Bug 38) (stdlib-only, testbar)
   charging_start.py    – Bug 43: serialize_charging_start/restore_charging_start – persisterar _charging_started_at över omstart (stdlib-only, testbar; tester i tests/test_bug43.py)
   clear_profile.py     – Feature 8: opt_int/parse_confirm/parse_clear_request/refused_result – vakt och tolkning av clear_charging_profile-indata (stdlib-only, testbar; tester i tests/test_feature8.py)
+  logging_setup.py     – Feature 9: loggkonfiguration – HaForwardHandler (WARNING+ till HA-loggen), dygnsroterande fil (14 dygn), valfri syslog UDP; apply_logging/remove_logging (stdlib-only, testbar; tester i tests/test_logging_setup.py, kopplingen i tests/test_feature9_wiring.py)
   price_cap.py         – Feature 5: select_price_cap_slots – slots ≤ pristak (stdlib-only, testbar)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
@@ -374,8 +375,8 @@ Outlet = 13 A trots `GaroOwnerMaxCurrent` = 16 A; boxens logg visade `SC=13.0`).
 - **Effekt:** rensningen av `ChargePointMaxProfile` slog igenom direkt i den pågående transaktionen (schemat 16 A, laddeffekt
   8,7 → 10,7 kW). `set_charging_limit()` påverkas inte (den använder `GaroOwnerMaxCurrent`; `ChargePointMaxProfile` bara som
   fallback via `_apply_charge_point_max_profile`, profil-id 1).
-- **Debugloggen:** loggern har ingen egen nivå (`configuration.yaml`: `logger: default: error`), så
-  `/config/ocpp_charger_debug.log` är tom efter varje HA-omstart tills `logger.set_level` `custom_components.ocpp_charger: debug` körs.
+- **Debugloggen:** sedan Feature 9 sätter koden själv DEBUG vid uppstart, så `/config/ocpp_charger_debug.log` fylls direkt efter
+  varje omstart (ingen `logger.set_level` behövs; se "Loggning (Feature 9)").
 
 ## Charge Windows-sensor (Feature 3)
 Diagnostisk sensor `sensor.ocpp_charge_windows` som exponerar `charge_plan` som strukturerade
@@ -482,9 +483,32 @@ och `charging_started_at` (Bug 43) mellan omstarter.
 - **Bug 43:** `charging_started_at` återställs däremot **före** `set_active_vehicle()` i `_load_state()`, så att även
   den plan som körs mitt i återställningen får rätt vänsterkant (se "Laddstartstid över omstart (Bug 43)").
 
-## Loggning
-- Roterande debug-fil: `/config/ocpp_charger_debug.log` (5 MB × 3 filer)
-- HA-log: `home-assistant.log` (filtreras med `grep -i ocpp_charger`)
+## Loggning (Feature 9)
+`logging_setup.py` (stdlib-only) äger all loggkonfiguration. `async_setup_entry()` anropar `apply_logging()` överst (via executor)
+och `async_unload_entry()` `remove_logging()` efter `coordinator.async_stop()`. Komponentloggern `custom_components.ocpp_charger`
+sätts till DEBUG med `propagate = False`; tidigare nivå och propagate återställs vid unload.
+- **Fil:** `hass.config.path(LOG_FILE_NAME)` = `/config/ocpp_charger_debug.log`. Alla nivåer, ny fil vid midnatt
+  (`TimedRotatingFileHandler`, `when="midnight"`), 14 dygn sparas; roterade filer får datumsuffix
+  (`ocpp_charger_debug.log.2026-09-18`). Skrivs av en egen tråd (`QueueHandler` → `QueueListener`), aldrig i HA:s event-loop.
+- **HA-loggen** (`home-assistant.log`): bara WARNING och ERROR från komponenten – `HaForwardHandler` kringgår med avsikt HA:s
+  per-logger-nivåer. Allt (INFO/DEBUG också) om options-valet `log_verbose_ha` ("Skicka allt till Home Assistants logg") är på.
+  Filtrera som förut med `grep -i ocpp_charger`.
+- **Syslog UDP (valfritt):** options → "📝 Edit logging settings" → värd, port (standard 1514), lägsta nivå (standard DEBUG). Tom värd = av.
+  Facility `local0`, tag `ocpp_charger`, ingen avslutande NUL-byte. Värdnamnet slås upp en gång vid start (IP används sedan).
+  Okänd värd eller sändningsfel ger EN warning och fäller aldrig setup; upprepade sändningsfel tystas tills sändningen fungerar igen.
+  `syslog_host` har medvetet ingen `default=` i formuläret utan förifylls med `description={"suggested_value": ...}`: HA-frontend
+  utelämnar tomma fält och voluptuous fyller i den gamla värden igen om fältet har `default=`, så en sparad värd kunde aldrig
+  rensas (port, nivå och verbose-valet har `default=`).
+- **Ändra inställningarna:** options-flowets `_save()` laddar om config entry → unload + setup tillämpar de nya värdena
+  (laddaren återansluter, som vid alla options-ändringar).
+- **`logger:` i `configuration.yaml`:** behövs inte – koden sätter DEBUG själv, så ett `logger:`-block för komponenten
+  (t.ex. `custom_components.ocpp_charger: debug`) kan tas bort. `logger.set_level` mot komponenten påverkar fil och syslog
+  (de får det loggern släpper igenom).
+- **Kända begränsningar:** UDP är opålitligt (filen är den pålitliga kopian). Syslog-paketet har ingen TIMESTAMP/HOSTNAME-header
+  (Graylog sätter mottagningstid och avsändar-IP); Python 3 lägger **ingen** UTF-8-BOM men en avslutande NUL, som är avstängd.
+  Multi-line-poster (tracebacks) blir ett datagram; över ~1 400 byte kan det fragmenteras eller trunkeras. Gamla
+  `ocpp_charger_debug.log.1`–`.3` från `RotatingFileHandler` rensas inte och räknas inte in i de 14 dygnen – radera manuellt.
+  HA:s egna loggrader om integrationen (`homeassistant.setup` m.fl.) berörs inte.
 
 ## Testinstans
 | Parameter | Värde |

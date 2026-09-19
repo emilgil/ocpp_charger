@@ -48,10 +48,10 @@ scp -r custom_components/ocpp_charger/*.py root@192.168.1.97:/config/custom_comp
 # Starta om HA
 ssh root@192.168.1.97 "ha core restart"
 
-# Följ loggen
+# Följ loggen (HA-loggen har bara WARNING/ERROR från komponenten)
 ssh root@192.168.1.97 "grep -i ocpp_charger /config/home-assistant.log | grep -v SmartThings | tail -30"
 
-# Debug-logg (roterande fil, mer verbose)
+# Debug-logg (alla nivåer, ny fil varje dygn, 14 dygn)
 ssh root@192.168.1.97 "tail -f /config/ocpp_charger_debug.log"
 ```
 
@@ -224,8 +224,9 @@ Notiserna är åtgärdbara: `ocpp_use_day_charging` / `ocpp_use_night_charging`.
 
 ## Loggning
 
-- Roterande debug-fil: `/config/ocpp_charger_debug.log` (5 MB × 3 filer via `RotatingFileHandler`)
-- HA-log: `home-assistant.log` (filtreras med `grep -i ocpp_charger`)
+- Egen loggfil: `/config/ocpp_charger_debug.log` – alla nivåer, ny fil varje dygn (`TimedRotatingFileHandler`, midnatt), 14 dygn sparas, datumsuffix på äldre dygn
+- HA-log: `home-assistant.log` får bara WARNING/ERROR från komponenten (filtreras med `grep -i ocpp_charger`); allt vid options-valet `log_verbose_ha` ("Skicka allt till Home Assistants logg")
+- Valfri syslog UDP (Graylog): options → "Edit logging settings" (värd, port, lägsta nivå). All konfiguration ligger i `logging_setup.py`; se CLAUDE.md "Loggning (Feature 9)"
 
 ## OCPP-services
 

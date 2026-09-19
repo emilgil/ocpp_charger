@@ -1,5 +1,67 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-19: Feature 9 – Separat loggfil, tystare HA-logg och syslog-UDP (Graylog)
+
+**Bakgrund:** Integrationen skrev ca 20 000 loggrader per dygn (Heartbeat, `[Store] Sparade state`, `[Schedule] Period=...`,
+`Finished fetching ocpp_charger data` m.fl.) som drunknade övrig HA-logg i `home-assistant.log`. Komponentloggern hade en egen
+`RotatingFileHandler` men propagerade fortfarande uppåt till HA:s root-logger, så allt skrevs till båda så snart nivån var DEBUG/INFO.
+
+**Åtgärd:** Ny modul `logging_setup.py` stänger propageringen (`propagate = False`) och styr själv vad som når vad:
+- **HA-loggen:** bara WARNING och ERROR (`HaForwardHandler`), allt om options-valet `log_verbose_ha` ("Skicka allt till Home Assistants
+  logg") är på.
+- **Fil:** `ocpp_charger_debug.log` med alla nivåer, ny fil varje dygn (`TimedRotatingFileHandler`, midnatt), 14 dygn sparas,
+  datumsuffix på roterade filer. Skrivs av en egen tråd (`QueueHandler` → `QueueListener`), inte i HA:s event-loop.
+- **Syslog UDP (valfritt, Graylog):** värd/port/lägsta nivå i options → "Edit logging settings". Facility `local0`, tag `ocpp_charger`.
+  Värdnamnet löses en gång vid start; fel ger en enda warning och fäller aldrig setup; upprepade sändningsfel tystas.
+Ändrade loggvärden tillämpas via den omladdning som options-flowets `_save()` redan gör. Ingen ändring i laddlogiken,
+planeraren eller koordinatorn.
+
+**Avvikelser från specen** (alla verifierade empiriskt på Python 3.10.12):
+- `SysLogHandler.append_nul = False`: Pythons standard avslutar varje datagram med en NUL-byte som nyare syslog-mottagare släpper
+  igenom som en del av meddelandet. Specens antagande att Python lägger en UTF-8-**BOM** stämmer inte för Python 3 (det var Python 2) –
+  ingen BOM skickas; testet kräver att paketet varken har NUL eller BOM.
+- `QueueListener(..., respect_handler_level=True)`: utan den ignoreras syslog-nivån (specens test 8).
+- Syslog-uppbyggnaden fångar `Exception`, inte bara `OSError`: `getaddrinfo("a..b")` ger `UnicodeError`, som annars hade fällt
+  `async_setup_entry`.
+- `log_verbose_ha` tolkas med `is True` (strängen `"false"` är sann i Python; jfr Feature 8:s `confirm_clear_all`).
+- Modulens egen logger heter `custom_components.ocpp_charger.logging_setup` (hårdkodat), så dess varningar tar samma väg som
+  övriga även i de fristående testerna.
+- `syslog_host` i `edit_logging`-formuläret har **ingen** `default=` utan förifylls med `description={"suggested_value": <nuvarande värd>}`.
+  HA:s frontend utelämnar tomma fält vid submit och voluptuous fyller då i en utelämnad nyckel med dess `default`, så en sparad värd
+  kunde aldrig rensas ("tomt = av" var onåbart, utom genom att skriva ett mellanslag). Verifierat mot riktiga voluptuous 0.15.2. De
+  tre andra fälten har `default=` precis som specen anger. Täcks av `test_clearing_the_syslog_host_turns_syslog_off`.
+- Tester utöver specens tio: `tests/test_feature9_wiring.py` (ast-granskning av `__init__.py`, den riktiga options-flow-klassen körd mot
+  fejkad voluptuous/HA, översättningstexterna) – `homeassistant` och `voluptuous` finns inte lokalt.
+
+| Fil | Ändring |
+|-----|---------|
+| `logging_setup.py` | Ny modul (stdlib-only): `LoggingConfig`, `config_from_entry_data()`, `HaForwardHandler`, `RateLimitedSysLogHandler`, `apply_logging()`, `remove_logging()` |
+| `const.py` | +`CONF_LOG_VERBOSE_HA`, `CONF_SYSLOG_HOST/PORT/LEVEL`, `DEFAULT_SYSLOG_PORT/LEVEL`, `LOG_FILE_NAME`, `LOG_BACKUP_DAYS` |
+| `__init__.py` | `async_setup_entry()`/`async_unload_entry()` anropar `logging_setup` (via executor) i stället för den inbyggda `RotatingFileHandler`-koden |
+| `config_flow.py` | Ny menypost "📝 Edit logging settings" och steget `edit_logging`; `_logging_data` slås ihop i `_save()` |
+| `strings.json`, `sv.json`, `translations/sv.json` | Texter för `edit_logging` |
+| `tests/test_logging_setup.py` | 25 tester: config-parsning, propagate/nivå-återställning, idempotens, HA-vidarebefordran (även HA:s root-nivå), fil (alla nivåer, rotation, traceback), syslog av/på/nivå/ogiltig värd, `handleError`-rate-limit; mutationskontrollerade |
+| `tests/test_feature9_wiring.py` | 17 tester: `__init__.py`-kopplingen (ast), options-flow-klassen mot fejkade beroenden (fejk-voluptuous som fyller i `default` för utelämnade nycklar, så "rensat fält" modelleras som HA gör), JSON-texter; fångar saknade const-importer och icke-awaitade executor-anrop / felordnade argument (mutationskontrollerade) |
+
+**Verifiering:** Enhetstester lokalt (25 + 17), mutationskontroll av modulen. **Live-verifiering återstår** – se `feature9.md`
+"Verifiering efter deploy" (HA-loggen utan INFO/DEBUG, filen växer, datumsuffixad fil efter midnatt, Graylog tar emot, verbose av/på,
+felaktig värd ger en enda warning).
+
+**Övergång vid deploy:** full HA-omstart; kopiera `*.py`, `strings.json`, `sv.json` och `translations/sv.json` explicit (de följer
+inte med `*.py`-globben). Ta bort ett ev. `logger:`-block för komponenten i `configuration.yaml` (koden sätter DEBUG själv).
+Radera gamla `ocpp_charger_debug.log.1`–`.3` manuellt.
+
+**Kända begränsningar:**
+- UDP är opålitligt: tappade paket märks inte och Graylog nere påverkar inte HA. Filen är den pålitliga kopian.
+- Syslog-paketet har ingen TIMESTAMP/HOSTNAME-header (`<PRI>ocpp_charger: meddelande`); Graylog sätter mottagningstid och avsändar-IP.
+  Hur Graylogs Syslog-input tolkar formatet är inte testat mot användarens instans – verifieras i live-steg 4.
+- Ändras komponentens loggernivå via `logger.set_level` påverkas fil och syslog. Andra loggers än `custom_components.ocpp_charger`
+  (t.ex. HA:s `homeassistant.setup`) berörs inte.
+- Multi-line-poster (tracebacks) skickas som ett datagram; över ~1 400 byte kan det fragmenteras eller trunkeras.
+- `ocpp_charger_debug.log.1`–`.3` från `RotatingFileHandler` rensas inte automatiskt och räknas inte in i de 14 dygnen.
+- Samma `default=`-mönster finns kvar i `edit_notify` för `notify_dashboard_url`: en sparad dashboard-URL går inte att rensa i UI:t.
+  Rörs inte här (utanför Feature 9).
+
 ## 2026-09-19: Feature 8 – tjänsterna `get_composite_schedule` och `clear_charging_profile`
 
 **Bakgrund:** Garo-boxen erbjöd bara 13 A (`Current.Offered` Outlet ≈ 8,3 kW) trots `GaroOwnerMaxCurrent` = 16 A. Boxens
