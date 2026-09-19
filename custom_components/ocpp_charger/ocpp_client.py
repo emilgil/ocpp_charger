@@ -697,6 +697,38 @@ class OCPPClient:
             _LOGGER.error("[OCPP] GetCompositeSchedule failed: %s", err)
             return {"status": "Error", "error": str(err)}
 
+    async def clear_charging_profile(
+        self,
+        profile_id: int | None = None,
+        connector_id: int | None = None,
+        purpose: str | None = None,
+        stack_level: int | None = None,
+    ) -> dict:
+        """Send ClearChargingProfile. Alla fält är valfria i OCPP 1.6.
+
+        Utan några filter rensas ALLA profiler i laddboxen. Anroparen
+        (service-handlern) ansvarar för att skydda mot det.
+        """
+        payload: dict = {}
+        if profile_id is not None:
+            payload["id"] = profile_id
+        if connector_id is not None:
+            payload["connectorId"] = connector_id
+        if purpose:
+            payload["chargingProfilePurpose"] = purpose
+        if stack_level is not None:
+            payload["stackLevel"] = stack_level
+        try:
+            result = await self._send_call(ACTION_CLEAR_CHARGING_PROFILE, payload)
+            status = result.get("status", "Unknown")
+            _LOGGER.info(
+                "[OCPP] ClearChargingProfile payload=%s → %s", payload, status
+            )
+            return {"status": status, "request": payload}
+        except Exception as err:
+            _LOGGER.error("[OCPP] ClearChargingProfile failed: %s", err)
+            return {"status": "Error", "request": payload, "error": str(err)}
+
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #

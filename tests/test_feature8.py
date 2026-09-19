@@ -105,6 +105,74 @@ def test_get_composite_schedule_without_charger_reports_error():
     assert result == {"status": "Error", "error": "No charger connected"}
 
 
+# ── clear_charging_profile ─────────────────────────────────────────────────────
+
+
+def test_clear_without_filters_sends_empty_payload():
+    # Klienten skyddar inte själv – det gör service-handlern (confirm_clear_all).
+    client = make_client()
+    calls = stub_send_call(client, {"status": "Accepted"})
+    result = asyncio.run(client.clear_charging_profile())
+    assert calls == [("ClearChargingProfile", {})]
+    assert result == {"status": "Accepted", "request": {}}
+
+
+def test_clear_maps_every_filter_to_its_ocpp_field():
+    client = make_client()
+    calls = stub_send_call(client, {"status": "Accepted"})
+    asyncio.run(client.clear_charging_profile(
+        profile_id=5, connector_id=1, purpose="TxDefaultProfile", stack_level=2,
+    ))
+    assert calls == [(
+        "ClearChargingProfile",
+        {"id": 5, "connectorId": 1, "chargingProfilePurpose": "TxDefaultProfile", "stackLevel": 2},
+    )]
+
+
+def test_clear_keeps_zero_valued_filters():
+    # 0 är giltigt: connectorId 0 = hela laddpunkten, id 0 och stackLevel 0 är riktiga värden.
+    client = make_client()
+    calls = stub_send_call(client, {"status": "Accepted"})
+    asyncio.run(client.clear_charging_profile(profile_id=0, connector_id=0, stack_level=0))
+    assert calls == [("ClearChargingProfile", {"id": 0, "connectorId": 0, "stackLevel": 0})]
+
+
+def test_clear_treats_empty_purpose_as_no_filter():
+    client = make_client()
+    calls = stub_send_call(client, {"status": "Accepted"})
+    asyncio.run(client.clear_charging_profile(purpose=""))
+    assert calls == [("ClearChargingProfile", {})]
+
+
+def test_clear_passes_unknown_status_through():
+    # Unknown = ingen profil matchade filtret (OCPP 1.6).
+    client = make_client()
+    stub_send_call(client, {"status": "Unknown"})
+    result = asyncio.run(client.clear_charging_profile(purpose="TxProfile"))
+    assert result == {"status": "Unknown", "request": {"chargingProfilePurpose": "TxProfile"}}
+
+
+def test_clear_failure_is_returned_not_raised():
+    client = make_client()
+    stub_send_call(client, error=TimeoutError("OCPP call ClearChargingProfile timed out"))
+    result = asyncio.run(client.clear_charging_profile(profile_id=7))
+    assert result == {
+        "status": "Error",
+        "request": {"id": 7},
+        "error": "OCPP call ClearChargingProfile timed out",
+    }
+
+
+def test_clear_without_charger_reports_error():
+    client = make_client()
+    result = asyncio.run(client.clear_charging_profile(purpose="TxProfile"))
+    assert result == {
+        "status": "Error",
+        "request": {"chargingProfilePurpose": "TxProfile"},
+        "error": "No charger connected",
+    }
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
