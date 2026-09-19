@@ -1,5 +1,47 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-19: Bug 42 – Laddfönstret visade Smart-planens billigaste luckor även i Immediate-läge
+
+**Symptom:** Användaren bytte från Smart till Immediate medan Kia eNiro laddade. I "Elpris"-grafen
+(`Laddfönster`-serien, `slots` på `..._charge_windows`) låg två Smart-block kvar vid 13:30–15:30
+fast bilen redan laddade (8,3 kW) och "Nu"-linjen stod vid ca 11. Förväntat: ett enda block från
+sessionens start till beräknad sluttid.
+
+**Rotorsak:** (1) `_update_charge_plan()` anropade alltid `plan_cheapest_window()`; enda lägesgrenen
+var pristaket (bara Smart). I Immediate ignorerar styrningen planen, så den var bara vilseledande
+information. (2) Planeraren räknade med schema/fordonsgräns (11 kW) och hela 15-minutersluckor
+(5 × 2,75 kWh = 13,8 kWh mot verkligt behov 11,61 kWh) i stället för uppmätt effekt. (3) Gamla
+fönster rensades aldrig: `_rebuild_charge_windows()` gör `return` för `None`/infeasible plan, och
+"mål nått" samt 300 s-frysen efter RemoteStart returnerade före ombyggnad.
+
+**Åtgärd:** I Immediate byggs ett enda block `[sessionens starttid, nu + återstående energi / effekt]`.
+Effekten är uppmätt (`power_w >= 1000` under laddning), annars schema/fordonsgräns (fönster visas även
+i `Preparing`/`SuspendedEVSE`). Vänsterkanten är `_charging_started_at` (Bug 34), före laddstart "nu".
+`energy_kwh`, `estimated_cost_sek` och `duration_minutes` gäller återstående laddning (Bug 29-semantik;
+`_update_eta` återanvänder `duration_minutes`). Tomt fönster när kabeln är urkopplad, bilen är nöjd
+(`SuspendedEV`) eller målet är nått. I Immediate hoppas 300 s-frysen över och throttlen är 60 s
+(annars 300 s). `set_charge_mode()` rensar Immediate-fönstret innan Smart räknar om, och `_alt_plan`
+nollas så Planner Savings inte jämför mot en gammal Smart-plan. Styrlogiken (`_update_smart_charging`)
+och kortet är oförändrade.
+
+| Fil | Ändring |
+|-----|---------|
+| `charge_planner.py` | +`plan_immediate_window()`, `pick_immediate_power_kw()`, `immediate_window_wanted()` (stdlib-only) |
+| `__init__.py` | +`_update_immediate_plan()`, `_clear_immediate_plan()`; Immediate-hook i `_update_charge_plan()`; lägesmedvetna tidiga returer (frys, mål nått, throttle); `set_charge_mode()` rensar vid byte bort från Immediate |
+| `tests/test_bug42.py` | 13 tester av de rena funktionerna (mutationskontrollerade) |
+
+**Verifiering:** Enhetstester + mutationskontroll (13/13 dödade). Koordinatorlimmet körd mot de riktiga
+metoderna i HA 2025.1.4 med loggens indata (78,3 % → 11,61 kWh → slut ≈84 min fram). Live efter deploy
+(Immediate, bilen laddade): sensorn visar ett block, Planned Charge End = ETA-sensorn, inga fel i loggen.
+
+**Kända begränsningar:**
+- `_charging_started_at` persisteras inte (Bug 34). En HA-omstart mitt i laddningen flyttar vänsterkanten
+  till omstartstiden och skickar om "Laddning startad"-notisen.
+- Under de första ~2 min efter en omstart kan blocket bli för långt: första planen körs före
+  `_load_state()` och använder då fullt behov och schemaeffekt. Rättas av nästa 60 s-cykel.
+- `actual_energy_kwh` fylls inte i för Immediate-block (blocket "slutförs" aldrig).
+- Byte Immediate → Smart inom 5 min efter en Smart-auto-start lämnar planen tom tills frysen släpper.
+
 ## 2026-09-12: Bug 41 – fordonsbyte + Garo-reset ackumulerade det gamla fordonets energi in i den nya sessionen
 
 **Symptom:** Kia eNiro kopplades in strax efter att fordonet bytts från Skoda Enyaq via

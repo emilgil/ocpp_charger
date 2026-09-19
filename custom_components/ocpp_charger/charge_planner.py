@@ -16,6 +16,7 @@ that the coordinator uses for auto-start/stop decisions.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -365,5 +366,149 @@ def plan_cheapest_window(
         active_intervals=active_ivs,
         feasible=feasible,
         partial=_partial,
+        message=msg,
+    )
+
+
+# ── Immediate mode (Bug 42) ───────────────────────────────────────────────
+
+# Below this measured power the charger is still ramping up (or idling), so the
+# reading would give an absurdly long window – fall back to the schedule power.
+IMMEDIATE_MIN_MEASURED_W = 1000.0
+
+
+def pick_immediate_power_kw(
+    power_w: float | None, charging: bool, fallback_kw: float
+) -> float:
+    """Bug 42: power (kW) to size the Immediate window with.
+
+    The measured power is used once charging has ramped up; otherwise the
+    schedule / vehicle limit (``fallback_kw``) is the best available estimate.
+    """
+    if charging and power_w is not None and power_w >= IMMEDIATE_MIN_MEASURED_W:
+        return power_w / 1000.0
+    return fallback_kw
+
+
+def immediate_window_wanted(
+    cable_connected: bool,
+    connector_status: str | None,
+    goal_reached: bool,
+    energy_needed_kwh: float,
+) -> bool:
+    """Bug 42: True when an Immediate-mode charge window should be shown.
+
+    Shown from cable connect (also before charging has actually started) until
+    the goal is reached. ``SuspendedEV`` = the car itself refuses to charge, so
+    there is nothing to show.
+    """
+    return (
+        bool(cable_connected)
+        and (connector_status or "") != "SuspendedEV"
+        and not goal_reached
+        and energy_needed_kwh > 0
+    )
+
+
+def plan_immediate_window(
+    interval_prices: list[dict[str, Any]],
+    energy_needed_kwh: float,
+    power_kw: float,
+    now: datetime,
+    *,
+    window_start: datetime | None = None,
+) -> ChargePlan:
+    """Bug 42: the single contiguous window Immediate mode actually charges in.
+
+    Immediate ignores prices and deadline: the car charges from now until the
+    goal is reached, so the window is ``[window_start, now + energy / power]``.
+    ``window_start`` (the real session start) only stretches ``start`` and
+    ``active_intervals`` backwards for display; it is clamped to ``now``.
+    Everything else describes the charging still to come (Bug 29 semantics):
+    ``energy_kwh`` is the remaining energy, ``duration_minutes`` the remaining
+    minutes (``_update_eta`` reuses it) and ``intervals`` only cover
+    ``[now, end)``, one entry per 15-minute price slot with ``time`` clipped to
+    ``now`` so ``build_charge_windows()`` (``iv_start <= time < iv_end``) keeps
+    the slot that contains ``now`` (cf. Bug 22).
+
+    Slots without price data use the nearest earlier known price.
+
+    Args:
+        interval_prices:   [{time: datetime, value: float (SEK/kWh)}, ...]
+        energy_needed_kwh: remaining energy (AC side, after efficiency)
+        power_kw:          measured power, else schedule / vehicle limit
+        now:               current time
+        window_start:      real session start, None = now
+    """
+    now_utc = _to_utc(now)
+
+    if energy_needed_kwh <= 0 or power_kw <= 0:
+        return ChargePlan(
+            start=now_utc, end=now_utc, duration_minutes=0,
+            energy_kwh=0, estimated_cost_sek=0, avg_price_ore_kwh=0,
+            feasible=False, message="Immediate: nothing to charge.",
+        )
+
+    remaining = timedelta(hours=energy_needed_kwh / power_kw)
+    end_utc = now_utc + remaining
+    start_utc = now_utc if window_start is None else min(_to_utc(window_start), now_utc)
+
+    prices = sorted(
+        ((_to_utc(iv["time"]), float(iv["value"])) for iv in interval_prices),
+        key=lambda p: p[0],
+    )
+
+    def price_at(t: datetime) -> float:
+        price = prices[0][1] if prices else 0.0
+        for slot_t, slot_price in prices:
+            if slot_t > t:
+                break
+            price = slot_price
+        return price
+
+    interval_duration = timedelta(minutes=INTERVAL_MINUTES)
+    slot_start = now_utc.replace(
+        minute=now_utc.minute // INTERVAL_MINUTES * INTERVAL_MINUTES,
+        second=0, microsecond=0,
+    )
+    intervals: list[dict] = []
+    total_energy = 0.0
+    total_cost = 0.0
+    while slot_start < end_utc:
+        seg_start = max(slot_start, now_utc)
+        seg_end = min(slot_start + interval_duration, end_utc)
+        hours = (seg_end - seg_start).total_seconds() / 3600
+        if hours > 0:
+            price = price_at(slot_start)
+            energy = power_kw * hours
+            total_energy += energy
+            total_cost += price * energy
+            intervals.append({
+                "time":          seg_start.isoformat(),
+                "price_ore_kwh": round(price * 100, 2),
+                "power_kw":      round(power_kw, 2),
+                "energy_kwh":    round(energy, 4),
+            })
+        slot_start += interval_duration
+
+    remaining_minutes = math.ceil(remaining.total_seconds() / 60)
+    avg_price_ore = (total_cost / total_energy * 100) if total_energy > 0 else 0.0
+    msg = (
+        f"Immediate: {energy_needed_kwh:.1f} kWh at {power_kw:.1f} kW "
+        f"({remaining_minutes} min remaining) at avg {avg_price_ore:.1f} öre/kWh, "
+        f"cost ≈ {total_cost:.2f} SEK."
+    )
+    _LOGGER.debug("[ChargePlanner] %s", msg)
+
+    return ChargePlan(
+        start=start_utc,
+        end=end_utc,
+        duration_minutes=remaining_minutes,
+        energy_kwh=round(energy_needed_kwh, 3),
+        estimated_cost_sek=round(total_cost, 2),
+        avg_price_ore_kwh=round(avg_price_ore, 1),
+        intervals=intervals,
+        active_intervals=[(start_utc, end_utc)],
+        feasible=True,
         message=msg,
     )
