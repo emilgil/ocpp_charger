@@ -48,6 +48,7 @@ custom_components/ocpp_charger/
   deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi; golvar mot färsk rapporterad SoC (Bug 38) (stdlib-only, testbar)
   charging_start.py    – Bug 43: serialize_charging_start/restore_charging_start – persisterar _charging_started_at över omstart (stdlib-only, testbar; tester i tests/test_bug43.py)
+  clear_profile.py     – Feature 8: opt_int/parse_confirm/parse_clear_request/refused_result – vakt och tolkning av clear_charging_profile-indata (stdlib-only, testbar; tester i tests/test_feature8.py)
   price_cap.py         – Feature 5: select_price_cap_slots – slots ≤ pristak (stdlib-only, testbar)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
@@ -186,6 +187,7 @@ SMART_CHARGE_PRICE_THRESHOLD_PERCENTILE = 0.4  # fallback-tröskel
 | Autostart vid inkoppling utan RemoteStartTransaction | Garo startar automatiskt – HA behöver inte skicka RemoteStart |
 | Skickar INTE om StartTransaction/StatusNotification vid reconnect | `transaction_id` läses från MeterValues-payload. `TriggerMessage StatusNotification` skickas 10s efter HA-start |
 | Per-fas ström (L1/L2/L3), inget totalt faslöst värde | `current_a = mean(L1, L2, L3)` |
+| Laddprofil begränsade transaktionerna till 13 A (`ChargePointMaxProfile`, hittad och rensad 2026-09-19) | Syntes som `limit: 13` i `get_composite_schedule` under en transaktion och `Current.Offered` Outlet = 13 A (Body 16 A); utan transaktion visade boxen 16 A. Rensad med `clear_charging_profile purpose: ChargePointMaxProfile`. Ursprunget är okänt (integrationens fallback loggade ingen användning 14–19 sep). Kommer 13 A tillbaka: sök `ChargePointMaxProfile applied` / `SetChargingProfile` i debugloggen |
 
 ## ChargerState – viktiga fält (ocpp_client.py)
 ```python
@@ -344,6 +346,28 @@ När `allow_day_charging` är av (vardagars autoschema) men kabeln är inkopplad
 | `ocpp_charger.get_configuration` | Hämtar Garo-konfiguration, svar på event `ocpp_charger_ocpp_response` |
 | `ocpp_charger.change_configuration` | Ändrar Garo-konfiguration |
 | `ocpp_charger.rest_call` | Gör REST-anrop via integrationen |
+| `ocpp_charger.get_composite_schedule` | Läser det sammansatta laddschemat boxen tillämpar (OCPP `GetCompositeSchedule`, skrivskyddad). Fält: `connector_id` (0/1), `duration` (s), `charging_rate_unit` (A/W). Svar på event `ocpp_charger_ocpp_response` + debug-logg (Feature 8) |
+| `ocpp_charger.clear_charging_profile` | Rensar laddprofiler i boxen (OCPP `ClearChargingProfile`). Filter: `profile_id`, `connector_id`, `purpose`, `stack_level`. Utan filter krävs `confirm_clear_all: true` (bara bool `true` eller strängarna true/yes/on räknas; "false"/"off" avvisas), annars `status: Refused` och inget skickas (Feature 8) |
+
+### Laddprofil-tjänster (Feature 8)
+Finns för att hitta och ta bort en laddprofil i boxen som begränsar varje transaktion (bakgrund: `Current.Offered`
+Outlet = 13 A trots `GaroOwnerMaxCurrent` = 16 A; boxens logg visade `SC=13.0`). Båda går via `_send_call`, ändrar inte
+`ChargerState` och svarar med event `ocpp_charger_ocpp_response` (`action` = `GetCompositeSchedule` / `ClearChargingProfile`);
+`get_composite_schedule` loggar dessutom hela svaret i debug-loggen.
+- **Läsa:** `charging_schedule.chargingSchedulePeriod[].limit` = 13 (A) bekräftar en profil som sätter 13 A; 16 eller högre →
+  profilen är inte källan; `Rejected`/`NotSupported` → använd boxens webbsida (`/admin.html`). Läs UNDER en pågående
+  transaktion: utan transaktion visade boxen 16 A även medan profilen fanns.
+- **Rensa:** börja smalt (`purpose: TxDefaultProfile`, sedan `ChargePointMaxProfile`, sedan `TxProfile`; `Unknown` = inget
+  matchade; ett felformat svar utan `status` visas också som `Unknown` – kolla först `GetCompositeSchedule`-dumpen i
+  debug-loggen). Utan filter krävs `confirm_clear_all: true`, annars `status: Refused` och inget skickas. `0` är ett giltigt
+  filtervärde (`connector_id: 0` = hela laddpunkten). Bara bool `true` eller strängarna `true`/`yes`/`on` räknas som
+  bekräftelse (`"false"`, `"off"`, `1` avvisas). Vakten, `opt_int` och tolkningen av tjänstedata ligger i `clear_profile.py`
+  (stdlib-only, `tests/test_feature8.py`); handlern i `__init__.py` delegerar dit, inte `OCPPClient`.
+- **Effekt:** rensningen av `ChargePointMaxProfile` slog igenom direkt i den pågående transaktionen (schemat 16 A, laddeffekt
+  8,7 → 10,7 kW). `set_charging_limit()` påverkas inte (den använder `GaroOwnerMaxCurrent`; `ChargePointMaxProfile` bara som
+  fallback via `_apply_charge_point_max_profile`, profil-id 1).
+- **Debugloggen:** loggern har ingen egen nivå (`configuration.yaml`: `logger: default: error`), så
+  `/config/ocpp_charger_debug.log` är tom efter varje HA-omstart tills `logger.set_level` `custom_components.ocpp_charger: debug` körs.
 
 ## Charge Windows-sensor (Feature 3)
 Diagnostisk sensor `sensor.ocpp_charge_windows` som exponerar `charge_plan` som strukturerade

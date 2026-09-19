@@ -69,3 +69,90 @@ get_configuration:
       example: "MaxCurrentValue"
       selector:
         text:
+
+get_composite_schedule:
+  name: Get Composite Schedule
+  description: >
+    Ask the charger which composite charging schedule it currently applies
+    (OCPP GetCompositeSchedule). Read-only. Result is fired as event
+    'ocpp_charger_ocpp_response' and logged in ocpp_charger_debug.log.
+  fields:
+    connector_id:
+      name: Connector
+      description: 0 = whole charge point, 1 = connector 1.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 1
+          mode: box
+    duration:
+      name: Duration (seconds)
+      description: How far ahead to compute the schedule.
+      required: false
+      default: 3600
+      selector:
+        number:
+          min: 60
+          max: 86400
+          mode: box
+    charging_rate_unit:
+      name: Unit
+      description: A (ampere) or W (watt). The Garo charger uses A.
+      required: false
+      default: A
+      selector:
+        select:
+          options: [A, W]
+
+clear_charging_profile:
+  name: Clear Charging Profile
+  description: >
+    Remove installed charging profiles from the charger (OCPP
+    ClearChargingProfile). With no filters ALL profiles are removed, which
+    requires confirm_clear_all. Result is fired as event
+    'ocpp_charger_ocpp_response'.
+  fields:
+    profile_id:
+      name: Profile ID
+      description: Clear only the profile with this ID.
+      required: false
+      selector:
+        number:
+          min: 0
+          mode: box
+    connector_id:
+      name: Connector
+      description: Clear only profiles on this connector (0 = charge point).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          mode: box
+    purpose:
+      name: Purpose
+      description: Clear only profiles with this purpose.
+      required: false
+      selector:
+        select:
+          options: [ChargePointMaxProfile, TxDefaultProfile, TxProfile]
+    stack_level:
+      name: Stack level
+      description: Clear only profiles at this stack level.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10
+          mode: box
+    confirm_clear_all:
+      name: Confirm clear all
+      description: >
+        Must be true if no filter is given. Removes every charging profile in
+        the charger.
+      required: false
+      default: false
+      selector:
+        boolean:

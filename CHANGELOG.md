@@ -1,5 +1,53 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-19: Feature 8 – tjänsterna `get_composite_schedule` och `clear_charging_profile`
+
+**Bakgrund:** Garo-boxen erbjöd bara 13 A (`Current.Offered` Outlet ≈ 8,3 kW) trots `GaroOwnerMaxCurrent` = 16 A. Boxens
+egen logg visade `SC=13.0` (Smart Charging) som enda gräns under 16 A, vilket tydde på en installerad laddprofil som
+begränsade varje ny transaktion. Integrationen kunde bara läsa och ändra konfiguration, inte läsa eller rensa laddprofiler.
+
+**Åtgärd:** Två nya tjänster, båda via befintliga `_send_call`, med svar som event `ocpp_charger_ocpp_response`:
+- `ocpp_charger.get_composite_schedule` (OCPP `GetCompositeSchedule`, skrivskyddad): `connector_id` (0 = hela laddpunkten, 1),
+  `duration` (s), `charging_rate_unit` (A/W). Hela svaret loggas i `ocpp_charger_debug.log`.
+- `ocpp_charger.clear_charging_profile` (OCPP `ClearChargingProfile`): filter `profile_id`, `connector_id`, `purpose`,
+  `stack_level`. Utan filter avvisas anropet (`status: Refused`, inget skickas till boxen) om inte `confirm_clear_all`
+  bekräftas. `0` är ett giltigt filtervärde.
+
+**Avvikelse från specen:** specens `confirm_clear_all`-kontroll var en sanningsvärdeskontroll, så strängen `"off"` eller
+`"false"` (t.ex. ett template som renderar en `input_boolean`) hade räknats som bekräftelse och rensat ALLA profiler. Bara
+bool `true` eller strängarna `true`/`yes`/`on` bekräftar nu. Vakten, `opt_int`, defaults och mappningen till klientens
+argument ligger i den nya modulen `clear_profile.py` (stdlib-only, testbar) som service-handlern delegerar till.
+
+Ingen ändring i laddlogiken, planeraren eller koordinatorn; `ChargerState` är orörd. `set_charging_limit()` använder
+`GaroOwnerMaxCurrent`, så rensade profiler påverkar inte integrationens normala begränsning.
+
+| Fil | Ändring |
+|-----|---------|
+| `ocpp_client.py` | +`ACTION_GET_COMPOSITE_SCHEDULE`; +`get_composite_schedule()`, `clear_charging_profile()` |
+| `__init__.py` | +`_handle_get_composite_schedule`, `_handle_clear_charging_profile` (delegerar till `clear_profile.py`); registrering och avregistrering |
+| `clear_profile.py` | Ny modul (stdlib-only): `opt_int()`, `parse_confirm()`, `parse_clear_request()`, `refused_result()` – vakten mot att rensa alla profiler och tolkningen av tjänstedata |
+| `services.yaml` | +2 tjänstedefinitioner |
+| `tests/test_feature8.py` | 37 tester: klientmetoderna mot stubbad `_send_call`, `services.yaml`, den rena vakten i `clear_profile.py`, clear-handlern körd mot fejkad `hass`, handler↔yaml-kontrakt och avregistrering via `ast`; mutationskontrollerade (klient/yaml/registrering 12/12; vakt och clear-handler M1–M7 samt 18 extra probes) |
+
+**Verifiering:** Enhetstester och mutationskontroll lokalt; slutgranskning som ledde till en fix-våg (strikt bekräftelse och
+`clear_profile.py`). Live 2026-09-19 (HA-omstart 16:42, uppe 16:45, inga fel, fem tjänster registrerade): tre anrop utan
+filter (inga argument, `"off"`, `"false"`) gav `Refused` och inget skickades till boxen (loggat). Under en pågående laddning
+gav `get_composite_schedule` `limit: 13.0` A för connector 1 och 0 (utan transaktion 16 A; `Current.Offered` Outlet 13 A,
+Body 16 A). `clear_charging_profile` med `purpose: TxDefaultProfile` gav `Unknown` och med `purpose: ChargePointMaxProfile`
+`Accepted`. Direkt efteråt visade schemat 16 A och laddeffekten gick från 8,7 till 10,7 kW (12,6 → 15,6 A) i den pågående
+sessionen.
+
+**Kända begränsningar:**
+- 13 A-profilens ursprung är okänt (integrationens fallback `_apply_charge_point_max_profile` loggade ingen användning
+  14–19 sep och `GaroOwnerMaxCurrent` var alltid `Accepted`). Att taket inte kommer tillbaka vid nästa transaktion är inte
+  verifierat än.
+- `get_composite_schedule`-handlerns event och defaults samt bindningen tjänst→handler är inte enhetstestade.
+- Ogiltiga tal (`profile_id: abc`) ger ett Python-fel i stället för en `Refused`-händelse (inget skickas). Ett felformat svar
+  utan `status` visas som `Unknown`, samma som "inget matchade" – kolla `GetCompositeSchedule`-dumpen i debug-loggen.
+- Debugloggen är tom efter varje HA-omstart tills `logger.set_level` `custom_components.ocpp_charger: debug` körs (loggern har
+  ingen egen nivå och `configuration.yaml` har `logger: default: error`).
+- Tjänsterna kräver inte admin (samma som `change_configuration`).
+
 ## 2026-09-19: Bug 43 – Laddstartstiden persisterades inte: omstart mitt i laddning flyttade vänsterkanten och skickade om start-notisen
 
 **Symptom:** Vid Bug 42-deployen (2026-09-19 11:37) gjordes `ha core restart` mitt i en pågående laddning

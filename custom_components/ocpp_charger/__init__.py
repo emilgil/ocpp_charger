@@ -110,6 +110,7 @@ from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline, helper_state_to_hhmm
 from .soc_estimate import estimate_soc
 from .charging_start import restore_charging_start, serialize_charging_start
+from .clear_profile import parse_clear_request, refused_result
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
 
@@ -288,8 +289,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         result = await coord.ocpp.get_configuration(key)
         hass.bus.async_fire(f"{DOMAIN}_ocpp_response", {**result, "action": "GetConfiguration", "entry_id": entry.entry_id})
 
+    async def _handle_get_composite_schedule(call) -> None:
+        coord: OCPPCoordinator = hass.data[DOMAIN][entry.entry_id]
+        result = await coord.ocpp.get_composite_schedule(
+            connector_id=int(call.data.get("connector_id", 1)),
+            duration=int(call.data.get("duration", 3600)),
+            charging_rate_unit=call.data.get("charging_rate_unit", "A"),
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_ocpp_response",
+            {**result, "action": "GetCompositeSchedule", "entry_id": entry.entry_id},
+        )
+
+    async def _handle_clear_charging_profile(call) -> None:
+        coord: OCPPCoordinator = hass.data[DOMAIN][entry.entry_id]
+        request = parse_clear_request(call.data)
+        if request is None:
+            _LOGGER.warning(
+                "[OCPP] clear_charging_profile utan filter avvisad – "
+                "sätt confirm_clear_all: true för att rensa ALLA profiler"
+            )
+            result = refused_result()
+        else:
+            result = await coord.ocpp.clear_charging_profile(**request)
+        hass.bus.async_fire(
+            f"{DOMAIN}_ocpp_response",
+            {**result, "action": "ClearChargingProfile", "entry_id": entry.entry_id},
+        )
+
     hass.services.async_register(DOMAIN, "change_configuration", _handle_change_configuration)
     hass.services.async_register(DOMAIN, "get_configuration", _handle_get_configuration)
+    hass.services.async_register(DOMAIN, "get_composite_schedule", _handle_get_composite_schedule)
+    hass.services.async_register(DOMAIN, "clear_charging_profile", _handle_clear_charging_profile)
 
     # Re-subscribe to MQTT if config entry data changes (e.g. topic prefix)
     entry.async_on_unload(
@@ -344,7 +375,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
         # Unregister services if no more entries remain
         if not hass.data[DOMAIN]:
-            for svc in (SERVICE_REST_CALL, "change_configuration", "get_configuration"):
+            for svc in (
+                SERVICE_REST_CALL,
+                "change_configuration",
+                "get_configuration",
+                "get_composite_schedule",
+                "clear_charging_profile",
+            ):
                 hass.services.async_remove(DOMAIN, svc)
     return unload_ok
 
