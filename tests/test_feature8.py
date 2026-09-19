@@ -8,6 +8,7 @@ modulen importeras direkt (paketets __init__.py drar in HA och ska INTE importer
 OCPPClient._send_call byts mot en stub som spelar in (action, payload) och returnerar ett
 färdigt svar – ingen websocket behövs. Förväntade värden är handskrivna litteraler.
 """
+import ast
 import asyncio
 import sys
 from pathlib import Path
@@ -206,6 +207,83 @@ def test_clear_charging_profile_service_definition():
     # … och ingen filterruta får vara förifylld, annars går "inget filter"-vakten runt.
     for name in ("profile_id", "connector_id", "purpose", "stack_level"):
         assert "default" not in fields[name], name
+
+
+# ── __init__.py: handlers ↔ services.yaml, registrering ↔ avregistrering ────────
+# __init__.py drar in Home Assistant och kan inte importeras här, så handlers och
+# registreringar granskas strukturellt via ast (inget körs).
+
+
+def _init_tree():
+    return ast.parse((PKG / "__init__.py").read_text(encoding="utf-8"))
+
+
+def _find_function(tree, name):
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"{name} saknas i __init__.py")
+
+
+def _call_data_keys(func):
+    """Strängnycklarna i alla call.data.get("...")-anrop i en service-handler."""
+    keys = set()
+    for node in ast.walk(func):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            continue
+        target = node.func.value  # ska vara call.data
+        if (
+            isinstance(target, ast.Attribute)
+            and target.attr == "data"
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "call"
+        ):
+            keys.add(node.args[0].value)
+    return keys
+
+
+def _service_name(node):
+    """Tjänstenamn ur ett argument: strängliteral eller konstantnamn (SERVICE_REST_CALL)."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return node.id
+    raise AssertionError(f"oväntat tjänsteargument: {ast.dump(node)}")
+
+
+def test_handlers_read_exactly_the_fields_services_yaml_declares():
+    tree = _init_tree()
+    services = load_services()
+    for handler, service in (
+        ("_handle_get_composite_schedule", "get_composite_schedule"),
+        ("_handle_clear_charging_profile", "clear_charging_profile"),
+    ):
+        keys = _call_data_keys(_find_function(tree, handler))
+        assert keys == set(services[service]["fields"]), handler
+
+
+def test_every_registered_service_is_removed_on_unload():
+    tree = _init_tree()
+    registered = {
+        _service_name(n.args[1])
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "async_register"
+        and len(n.args) >= 2
+    }
+    removed = set()
+    for n in ast.walk(_find_function(tree, "async_unload_entry")):
+        if isinstance(n, ast.For) and isinstance(n.iter, ast.Tuple):
+            removed |= {_service_name(e) for e in n.iter.elts}
+    assert {"get_composite_schedule", "clear_charging_profile"} <= registered
+    assert registered == removed
 
 
 if __name__ == "__main__":

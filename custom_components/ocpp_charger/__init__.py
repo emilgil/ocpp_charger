@@ -288,8 +288,62 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         result = await coord.ocpp.get_configuration(key)
         hass.bus.async_fire(f"{DOMAIN}_ocpp_response", {**result, "action": "GetConfiguration", "entry_id": entry.entry_id})
 
+    async def _handle_get_composite_schedule(call) -> None:
+        coord: OCPPCoordinator = hass.data[DOMAIN][entry.entry_id]
+        result = await coord.ocpp.get_composite_schedule(
+            connector_id=int(call.data.get("connector_id", 1)),
+            duration=int(call.data.get("duration", 3600)),
+            charging_rate_unit=call.data.get("charging_rate_unit", "A"),
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_ocpp_response",
+            {**result, "action": "GetCompositeSchedule", "entry_id": entry.entry_id},
+        )
+
+    def _opt_int(value):
+        """None/tom sträng → None, annars int (0 är ett giltigt värde)."""
+        if value is None or value == "":
+            return None
+        return int(value)
+
+    async def _handle_clear_charging_profile(call) -> None:
+        coord: OCPPCoordinator = hass.data[DOMAIN][entry.entry_id]
+        profile_id   = _opt_int(call.data.get("profile_id"))
+        connector_id = _opt_int(call.data.get("connector_id"))
+        stack_level  = _opt_int(call.data.get("stack_level"))
+        purpose      = call.data.get("purpose") or None
+
+        no_filter = (
+            profile_id is None and connector_id is None
+            and stack_level is None and not purpose
+        )
+        if no_filter and not call.data.get("confirm_clear_all", False):
+            _LOGGER.warning(
+                "[OCPP] clear_charging_profile utan filter avvisad – "
+                "sätt confirm_clear_all: true för att rensa ALLA profiler"
+            )
+            result = {
+                "status": "Refused",
+                "request": {},
+                "error": "Inga filter angivna. Sätt confirm_clear_all: true "
+                         "för att rensa alla profiler.",
+            }
+        else:
+            result = await coord.ocpp.clear_charging_profile(
+                profile_id=profile_id,
+                connector_id=connector_id,
+                purpose=purpose,
+                stack_level=stack_level,
+            )
+        hass.bus.async_fire(
+            f"{DOMAIN}_ocpp_response",
+            {**result, "action": "ClearChargingProfile", "entry_id": entry.entry_id},
+        )
+
     hass.services.async_register(DOMAIN, "change_configuration", _handle_change_configuration)
     hass.services.async_register(DOMAIN, "get_configuration", _handle_get_configuration)
+    hass.services.async_register(DOMAIN, "get_composite_schedule", _handle_get_composite_schedule)
+    hass.services.async_register(DOMAIN, "clear_charging_profile", _handle_clear_charging_profile)
 
     # Re-subscribe to MQTT if config entry data changes (e.g. topic prefix)
     entry.async_on_unload(
@@ -344,7 +398,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
         # Unregister services if no more entries remain
         if not hass.data[DOMAIN]:
-            for svc in (SERVICE_REST_CALL, "change_configuration", "get_configuration"):
+            for svc in (
+                SERVICE_REST_CALL,
+                "change_configuration",
+                "get_configuration",
+                "get_composite_schedule",
+                "clear_charging_profile",
+            ):
                 hass.services.async_remove(DOMAIN, svc)
     return unload_ok
 
