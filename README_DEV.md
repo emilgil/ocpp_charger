@@ -217,7 +217,7 @@ Notiserna är åtgärdbara: `ocpp_use_day_charging` / `ocpp_use_night_charging`.
 
 ## Persistens (Store)
 
-`self._store` (HA Storage) sparar `cable_connected` och `transaction_id` mellan omstarter.
+`self._store` (HA Storage) sparar `cable_connected`, `transaction_id` och laddstartstiden (`charging_started_at`, Bug 43) mellan omstarter.
 
 - `_save_state()` anropas i varje `_async_update_data()`-cykel
 - `_load_state()` anropas i `_delayed_soc_refresh()` (10s efter HA-start)
