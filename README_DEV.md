@@ -236,6 +236,8 @@ Tillgängliga via **Developer Tools → Actions**:
 | `ocpp_charger.get_configuration` | Hämtar Garo-konfiguration, svar på event `ocpp_charger_ocpp_response` |
 | `ocpp_charger.change_configuration` | Ändrar Garo-konfiguration |
 | `ocpp_charger.rest_call` | Gör REST-anrop via integrationen |
+| `ocpp_charger.get_composite_schedule` | Läser det sammansatta laddschemat boxen tillämpar (skrivskyddad), svar på event `ocpp_charger_ocpp_response` |
+| `ocpp_charger.clear_charging_profile` | Rensar laddprofiler i boxen; utan filter krävs `confirm_clear_all: true` (bara `true`/`yes`/`on`) |
 
 ## Testinstans
 
