@@ -47,6 +47,7 @@ custom_components/ocpp_charger/
   charge_windows.py    – Feature 3: bygger laddplanens slots (stdlib-only, testbar)
   deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi; golvar mot färsk rapporterad SoC (Bug 38) (stdlib-only, testbar)
+  charging_start.py    – Bug 43: serialize_charging_start/restore_charging_start – persisterar _charging_started_at över omstart (stdlib-only, testbar; tester i tests/test_bug43.py)
   price_cap.py         – Feature 5: select_price_cap_slots – slots ≤ pristak (stdlib-only, testbar)
   notifier.py          – Push-notiser
   rest_client.py       – Async HTTP-klient
@@ -139,9 +140,26 @@ och returnerar före dag/natt-notiserna och närvaro-erbjudandet (meningslösa i
 - **`set_charge_mode()`** rensar Immediate-fönstret *före* `_update_charge_plan()` när man lämnar Immediate.
 - `_alt_plan = None` i Immediate (Planner Savings skulle annars jämföra mot en gammal Smart-alternativplan).
 - **Rör inte** `_update_smart_charging()`/styrlogiken, kortet, Bug 28-frysningen eller pristaksläget (Feature 5).
-- **Kända begränsningar:** `_charging_started_at` persisteras inte → HA-omstart mitt i laddning flyttar
-  vänsterkanten till omstartstiden (och skickar om start-notisen); första planen efter omstart körs före `_load_state()`
-  och kan vara för lång i ~2 min; `actual_energy_kwh` fylls inte i för Immediate-block.
+- **Kända begränsningar:** första planen efter omstart körs före `_load_state()` och kan vara för lång i ~2 min;
+  `actual_energy_kwh` fylls inte i för Immediate-block. (`_charging_started_at` persisteras sedan Bug 43 – se nedan.)
+
+### Laddstartstid över omstart (Bug 43)
+`_charging_started_at` (Bug 34) var bara in-memory: en HA-omstart mitt i laddning nollade den, så start-grenen i
+`_check_notify_events()` skrev över den med "nu" (Laddfönster-blockets vänsterkant och `Planned Charge Start` hoppade
+till omstartstiden) och skickade om "Laddning startad"-pushen. Nu persisteras den via de rena hjälparna i
+`charging_start.py` (stdlib-only, `tests/test_bug43.py`).
+- **Spara/läs:** `_save_state()` skriver `charging_started_at` (`serialize_charging_start`); `_load_state()` återställer
+  via `restore_charging_start(raw, now, cable_connected=...)` **före** `set_active_vehicle()` (som kör en plan mitt i
+  återställningen, så även den första planen får rätt vänsterkant). Värdet nollas redan vid `Available` (Bug 34) och då sparas `None`.
+- **Avvisas (→ som förut, grenen sätter "nu"):** saknat/skräpvärde, naiv tid (tvetydig), kabeln urkopplad vid sparandet,
+  tid i framtiden, äldre än 24 h (`CHARGING_START_MAX_AGE`). Kastar aldrig.
+- **Start-grenen:** `_charging_started_at` och `_cable_session_start_notified` sätts alltid tillsammans, så ett redan satt
+  `_charging_started_at` betyder "start-notisen gick före omstarten": tiden skrivs inte över och `on_charging_started`
+  skickas inte igen. Övrig bokföring i grenen (`_cable_session_start_notified`, `_charging_seen_this_session`,
+  `_last_transaction_start`, `_last_cost_energy_kwh`) är oförändrad, så stopp-notis, grace period och kostnad beter sig som förut.
+- **Kända begränsningar:** första omstarten med den nya koden har inget sparat värde (gamla koden sparade ingen nyckel)
+  → beter sig som förut; deploya helst när ingen laddning pågår. Med `notify_on_start` avstängt sätts
+  `_charging_started_at` aldrig (Bug 34-beteende, oförändrat).
 
 ## Nyckelkonstanter (const.py)
 ```python
@@ -207,7 +225,7 @@ _suspended_ev_since: datetime | None      # SuspendedEV-detektion
 _cable_was_available: bool                # Bug 13A/38: armeras ENDAST av äkta Available; init False (Bug 38) så omstart mitt i kabelsession inte fyrar falsk genuin-inkoppling vid nästa Preparing
 _cable_connect_time: datetime | None      # Fix 10: tid för kabelinkoppling
 _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
-_charging_started_at: datetime | None     # Bug 34: fryst faktisk laddstartstid för PlannedChargeStartSensor (None innan start/efter urkoppling)
+_charging_started_at: datetime | None     # Bug 34: fryst faktisk laddstartstid för PlannedChargeStartSensor (None innan start/efter urkoppling); Bug 43: persisteras i Store och återställs vid omstart
 _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
 _day_charging_dismissed: bool             # Bug 3/21: användaren tryckt "🚫 Avsluta"
 _day_charging_dismissed_until: datetime | None  # Bug 21: nollställs vid lokal midnatt
@@ -420,14 +438,17 @@ behovet med ≤1 slot.
 ## Persistens (Store)
 `self._store` (HA Storage) sparar bl.a. `cable_connected`, `transaction_id`, `energy_kwh`,
 `price_cap_ore_kwh` (Feature 5),
-`allow_day_charging`/`day_charging_manual_override` (Bug 26)
-och `session_start_soc`/`session_total_kwh` (Bug 30) mellan omstarter.
+`allow_day_charging`/`day_charging_manual_override` (Bug 26),
+`session_start_soc`/`session_total_kwh` (Bug 30)
+och `charging_started_at` (Bug 43) mellan omstarter.
 - `_save_state()` anropas i varje `_async_update_data()`-cykel
 - `_load_state()` anropas i `_delayed_soc_refresh()` (10s efter HA-start)
 - **Bug 30:** `session_start_soc`/`session_total_kwh` återställs **efter** `set_active_vehicle()`
   i `_load_state()` (den nollställer dem). De håller SOC-estimatets baslinje i synk med dess
   energi över en omstart mitt i en laddning – annars dubbelräknas redan levererad energi och
   laddningen stoppar för tidigt ("Mål nått" vid fel SOC).
+- **Bug 43:** `charging_started_at` återställs däremot **före** `set_active_vehicle()` i `_load_state()`, så att även
+  den plan som körs mitt i återställningen får rätt vänsterkant (se "Laddstartstid över omstart (Bug 43)").
 
 ## Loggning
 - Roterande debug-fil: `/config/ocpp_charger_debug.log` (5 MB × 3 filer)

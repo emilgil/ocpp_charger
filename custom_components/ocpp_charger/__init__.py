@@ -109,6 +109,7 @@ from .price_cap import select_price_cap_slots
 from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline, helper_state_to_hhmm
 from .soc_estimate import estimate_soc
+from .charging_start import restore_charging_start, serialize_charging_start
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
 
@@ -619,6 +620,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 [[s.isoformat(), e.isoformat()] for s, e in self._session_plan_intervals]
                 if self._session_plan_intervals is not None else None
             ),
+            "charging_started_at": serialize_charging_start(self._charging_started_at),   # Bug 43
             "charge_mode": self.charge_mode,
             "price_cap_ore_kwh": self.price_cap_ore_kwh,   # Feature 5
             "target_soc": self.target_soc,
@@ -657,6 +659,22 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     self.ocpp.state.session_start = datetime.fromisoformat(data["session_start"])
                 except (ValueError, TypeError):
                     pass
+            # Bug 43: restore the charging start time (Bug 34). It used to be in-memory only, so a
+            # restart mid-charge reset it to "now": the Charge Windows block's left edge and
+            # Planned Charge Start jumped, and the "charging started" push went out again. Must come
+            # BEFORE set_active_vehicle() below, which runs a plan mid-restore. A value that isn't
+            # plausible (cable was out, too old, corrupt) is ignored and the start branch sets "now".
+            _started_at = restore_charging_start(
+                data.get("charging_started_at"),
+                datetime.now(timezone.utc),
+                cable_connected=bool(data.get("cable_connected")),
+            )
+            if _started_at is not None:
+                self._charging_started_at = _started_at
+                _LOGGER.info(
+                    "[Store] Återställde laddstartstid: %s",
+                    _started_at.astimezone().strftime("%H:%M:%S"),
+                )
             if data.get("charge_mode"):
                 self.charge_mode = data["charge_mode"]
             if data.get("target_soc") is not None:
@@ -1773,20 +1791,32 @@ class OCPPCoordinator(DataUpdateCoordinator):
             and state.power_w > 100
         ):
             self._cable_session_start_notified = True
-            self._charging_started_at = datetime.now(timezone.utc)  # Bug 34: frys starttid när laddning börjar
+            # Bug 43: _charging_started_at and _cable_session_start_notified are always set together
+            # and _charging_started_at is cleared at Available, so a start time that is already set
+            # here was restored from the Store after a restart mid-session: the start notice went out
+            # before the restart. Keep the real start time and don't announce it a second time.
+            _resumed = self._charging_started_at is not None
+            if not _resumed:
+                self._charging_started_at = datetime.now(timezone.utc)  # Bug 34: frys starttid när laddning börjar
             self._notified_start_session = state.session_id
             self._start_notified_this_connection = True
             self._charging_seen_this_session = True  # Bug 10: mark that we saw charging start
             self._last_cost_energy_kwh = 0.0
             self._last_transaction_start = datetime.now(timezone.utc)
             plan = self.charge_plan
-            self.notifier.on_charging_started(
-                soc_pct=state.soc_percent,
-                current_a=state.current_a,
-                power_kw=state.power_w / 1000,
-                plan_end=plan.end if plan and plan.feasible else None,
-                estimated_end=self.estimated_completion,
-            )
+            if _resumed:
+                _LOGGER.info(
+                    "[Notify] Laddstart redan annonserad före omstart (start %s) – ingen ny start-notis",
+                    self._charging_started_at.astimezone().strftime("%H:%M:%S"),
+                )
+            else:
+                self.notifier.on_charging_started(
+                    soc_pct=state.soc_percent,
+                    current_a=state.current_a,
+                    power_kw=state.power_w / 1000,
+                    plan_end=plan.end if plan and plan.feasible else None,
+                    estimated_end=self.estimated_completion,
+                )
 
         # ── Charging stopped (Bug 10: guard + delayed 60s for fresh SOC) ─────────
         if (

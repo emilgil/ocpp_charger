@@ -118,6 +118,9 @@ Notiser skickas max en gång per session för varje händelse:
 - Laddning startad (med SOC, ström och beräknad klar-tid)
 - Laddning avslutad (med laddad energi, kostnad och tid)
 
+Det gäller även över en omstart av Home Assistant: startar HA om mitt i en laddning skickas inte "Laddning startad" en gång till,
+och den planerade starttiden behålls.
+
 Notiserna är åtgärdbara – du kan välja dag- eller nattladdning direkt från notisen.
 
 Om en omräknad plan skulle skjuta upp ett redan valt laddfönster ett helt dygn framåt (kan

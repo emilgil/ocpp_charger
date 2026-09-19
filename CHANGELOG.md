@@ -1,5 +1,43 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-19: Bug 43 – Laddstartstiden persisterades inte: omstart mitt i laddning flyttade vänsterkanten och skickade om start-notisen
+
+**Symptom:** Vid Bug 42-deployen (2026-09-19 11:37) gjordes `ha core restart` mitt i en pågående laddning
+(Immediate, 8,3 kW). `Planned Charge Start` och Laddfönster-blockets vänsterkant hoppade från 10:48 till 11:37
+(omstartstiden), och "Laddning startad"-pushen skickades igen kl 11:37:22.
+
+**Rotorsak:** `_charging_started_at` (Bug 34) och `_cable_session_start_notified` var bara in-memory. Efter en
+omstart var båda "ej satta", så start-grenen i `_check_notify_events()` körde igen när laddning sågs: den skrev över
+`_charging_started_at` med "nu" och skickade `on_charging_started`. De två fälten sätts alltid tillsammans, så ett
+återställt `_charging_started_at` betyder exakt "start-notisen är redan skickad i denna kabelsession".
+
+**Åtgärd:** `_charging_started_at` sparas i Store (`charging_started_at`) och återställs i `_load_state()` före
+`set_active_vehicle()`, så även den första planen efter omstarten får rätt vänsterkant. Ett återställt värde används
+bara om det är rimligt (kabeln var inkopplad vid sparandet, tidszon finns, inte i framtiden, högst 24 h gammalt);
+annars beter sig koden som förut. Start-grenen skriver inte över ett redan satt värde och skickar inte om
+"Laddning startad"-notisen. Övrig bokföring i grenen är oförändrad, så stopp-notis, grace period och
+kostnadsspårning beter sig som förut.
+
+| Fil | Ändring |
+|-----|---------|
+| `charging_start.py` | Ny modul (stdlib-only): `serialize_charging_start()`, `restore_charging_start()`, `CHARGING_START_MAX_AGE` |
+| `__init__.py` | `_save_state()` skriver `charging_started_at`; `_load_state()` återställer före `set_active_vehicle()`; start-grenen i `_check_notify_events()` behåller återställd starttid och hoppar över dubblettnotisen |
+| `tests/test_bug43.py` | 9 tester av de rena funktionerna (mutationskontrollerade, 8/8 mutationer dödade) |
+
+**Verifiering (lokalt):** 9 tester RED → GREEN. Koordinatorlimmet (`_save_state`, `_load_state`, start-grenen) körd mot
+de riktiga metoderna i HA-venv med strikt fejkad `self`: 23 kontroller, 9 föll före ändringen och alla passerar efter,
+7/7 mutationer dödade, Bug 42-harnessen fortfarande 25/25. **Live-verifiering återstår** (ej deployad): Store-filen
+`/config/.storage/ocpp_charger_*` ska innehålla `charging_started_at` under laddning; full bevisning kräver en
+omstart under en pågående session.
+
+**Kända begränsningar:**
+- Första omstarten med den nya koden har inget sparat värde att återställa (gamla koden sparade ingen nyckel) och
+  beter sig som förut, dvs. en sista dubblettpush mitt i en laddning. Deploya helst när ingen laddning pågår;
+  effekten syns från och med nästa omstart under en pågående session.
+- Första planen efter en omstart körs fortfarande inne i `_load_state()` (via `set_active_vehicle()`), före
+  SOC-baslinjen är återställd, och kan vara för lång i ~2 min (kvar från Bug 42, rättas av nästa cykel).
+- Med `notify_on_start` avstängt sätts `_charging_started_at` aldrig (Bug 34-beteende, oförändrat).
+
 ## 2026-09-19: Bug 42 – Laddfönstret visade Smart-planens billigaste luckor även i Immediate-läge
 
 **Symptom:** Användaren bytte från Smart till Immediate medan Kia eNiro laddade. I "Elpris"-grafen
@@ -36,7 +74,7 @@ metoderna i HA 2025.1.4 med loggens indata (78,3 % → 11,61 kWh → slut ≈84 
 
 **Kända begränsningar:**
 - `_charging_started_at` persisteras inte (Bug 34). En HA-omstart mitt i laddningen flyttar vänsterkanten
-  till omstartstiden och skickar om "Laddning startad"-notisen.
+  till omstartstiden och skickar om "Laddning startad"-notisen. Åtgärdat i Bug 43.
 - Under de första ~2 min efter en omstart kan blocket bli för långt: första planen körs före
   `_load_state()` och använder då fullt behov och schemaeffekt. Rättas av nästa 60 s-cykel.
 - `actual_energy_kwh` fylls inte i för Immediate-block (blocket "slutförs" aldrig).
