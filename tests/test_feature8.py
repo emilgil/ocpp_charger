@@ -12,6 +12,7 @@ färdigt svar – ingen websocket behövs. Förväntade värden är handskrivna 
 import ast
 import asyncio
 import sys
+import types
 from pathlib import Path
 
 import yaml  # PyYAML – ingår i HA:s beroenden (HA-venv) och finns i systempython
@@ -442,6 +443,86 @@ def test_clear_request_parser_honours_every_field_services_yaml_declares():
         assert result is not None, name
         if name in filters:
             assert result[name] == samples[name], name
+
+
+# ── handler-limmet: kör själva _handle_clear_charging_profile mot fejkad hass ────
+# __init__.py kan inte importeras, men handlern är en fristående closure: dess ast-nod plockas ut
+# och körs med fejkad hass/entry/klient. Det prövar limmet mellan parser och klient – tappas ett
+# nyckelord, byts grenen eller blir en avvisning ett tomt anrop blir ett smalt filter "rensa allt".
+
+REFUSED_EVENT = (
+    "ocpp_charger_ocpp_response",
+    {
+        "status": "Refused",
+        "request": {},
+        "error": "Inga filter angivna. Sätt confirm_clear_all: true för att rensa alla profiler.",
+        "action": "ClearChargingProfile",
+        "entry_id": "entry-1",
+    },
+)
+
+
+class FakeOcppClient:
+    def __init__(self):
+        self.calls = []
+
+    async def clear_charging_profile(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"status": "Accepted", "request": {}}
+
+
+def run_clear_handler(data):
+    """Kör handlern med call.data = data. Returnerar (klientanrop, events, loggade varningar)."""
+    client = FakeOcppClient()
+    events, warnings = [], []
+    namespace = {
+        "hass": types.SimpleNamespace(
+            data={"ocpp_charger": {"entry-1": types.SimpleNamespace(ocpp=client)}},
+            bus=types.SimpleNamespace(async_fire=lambda name, payload: events.append((name, payload))),
+        ),
+        "entry": types.SimpleNamespace(entry_id="entry-1"),
+        "DOMAIN": "ocpp_charger",
+        "OCPPCoordinator": object,
+        "_LOGGER": types.SimpleNamespace(warning=lambda *args: warnings.append(args)),
+        "parse_clear_request": cpf.parse_clear_request,
+        "refused_result": cpf.refused_result,
+    }
+    func = _find_function(_init_tree(), "_handle_clear_charging_profile")
+    exec(compile(ast.Module(body=[func], type_ignores=[]), "__init__.py", "exec"), namespace)
+    asyncio.run(namespace["_handle_clear_charging_profile"](types.SimpleNamespace(data=data)))
+    return client.calls, events, warnings
+
+
+def test_clear_handler_passes_every_filter_to_the_client_and_fires_its_reply():
+    calls, events, warnings = run_clear_handler(
+        {"profile_id": 5, "connector_id": 0, "purpose": "TxProfile", "stack_level": "2"}
+    )
+    assert calls == [{"profile_id": 5, "connector_id": 0, "purpose": "TxProfile", "stack_level": 2}]
+    assert events == [(
+        "ocpp_charger_ocpp_response",
+        {"status": "Accepted", "request": {}, "action": "ClearChargingProfile", "entry_id": "entry-1"},
+    )]
+    assert warnings == []
+
+
+def test_clear_handler_refuses_without_filter_and_sends_nothing_to_the_charger():
+    # Även "off"/"false"/0 i confirm_clear_all (HA koercar inte) ska avvisas.
+    for data in ({}, {"confirm_clear_all": False}, {"confirm_clear_all": "off"},
+                 {"confirm_clear_all": "false"}, {"confirm_clear_all": 0}):
+        calls, events, warnings = run_clear_handler(data)
+        assert calls == [], data
+        assert events == [REFUSED_EVENT], data
+        assert len(warnings) == 1, data
+
+
+def test_clear_handler_clears_everything_only_on_explicit_confirmation():
+    calls, events, warnings = run_clear_handler({"confirm_clear_all": True})
+    assert calls == [{"profile_id": None, "connector_id": None, "purpose": None, "stack_level": None}]
+    assert events == [(
+        "ocpp_charger_ocpp_response",
+        {"status": "Accepted", "request": {}, "action": "ClearChargingProfile", "entry_id": "entry-1"},
+    )]
+    assert warnings == []
 
 
 if __name__ == "__main__":
