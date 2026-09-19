@@ -12,6 +12,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import yaml  # PyYAML – ingår i HA:s beroenden (HA-venv) och finns i systempython
+
 PKG = Path(__file__).resolve().parents[1] / "custom_components" / "ocpp_charger"
 sys.path.insert(0, str(PKG))
 import ocpp_client as oc  # noqa: E402
@@ -171,6 +173,39 @@ def test_clear_without_charger_reports_error():
         "request": {"chargingProfilePurpose": "TxProfile"},
         "error": "No charger connected",
     }
+
+
+# ── services.yaml ──────────────────────────────────────────────────────────────
+
+
+def load_services():
+    return yaml.safe_load((PKG / "services.yaml").read_text(encoding="utf-8"))
+
+
+def test_services_yaml_keeps_the_existing_services():
+    assert {"rest_call", "change_configuration", "get_configuration"} <= set(load_services())
+
+
+def test_get_composite_schedule_service_definition():
+    fields = load_services()["get_composite_schedule"]["fields"]
+    assert set(fields) == {"connector_id", "duration", "charging_rate_unit"}
+    assert fields["connector_id"]["default"] == 1
+    assert fields["duration"]["default"] == 3600
+    assert fields["charging_rate_unit"]["default"] == "A"
+    assert fields["charging_rate_unit"]["selector"]["select"]["options"] == ["A", "W"]
+
+
+def test_clear_charging_profile_service_definition():
+    fields = load_services()["clear_charging_profile"]["fields"]
+    assert set(fields) == {"profile_id", "connector_id", "purpose", "stack_level", "confirm_clear_all"}
+    assert fields["purpose"]["selector"]["select"]["options"] == [
+        "ChargePointMaxProfile", "TxDefaultProfile", "TxProfile",
+    ]
+    # Skyddet mot att rensa allt av misstag: confirm_clear_all är av som standard …
+    assert fields["confirm_clear_all"]["default"] is False
+    # … och ingen filterruta får vara förifylld, annars går "inget filter"-vakten runt.
+    for name in ("profile_id", "connector_id", "purpose", "stack_level"):
+        assert "default" not in fields[name], name
 
 
 if __name__ == "__main__":
