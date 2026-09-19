@@ -17,6 +17,9 @@ Garo laddbox ansluter till HA, inte tvärtom.
 # Kopiera alla Python-filer till HA
 scp -r custom_components/ocpp_charger/*.py root@192.168.1.97:/config/custom_components/ocpp_charger/
 
+# OBS: *.py tar INTE med services.yaml – kopiera den explicit när den ändrats
+scp custom_components/ocpp_charger/services.yaml root@192.168.1.97:/config/custom_components/ocpp_charger/
+
 # Starta om HA
 ssh root@192.168.1.97 "ha core restart"
 
@@ -26,6 +29,11 @@ ssh root@192.168.1.97 "grep -i ocpp_charger /config/home-assistant.log | tail -3
 # Debug-logg (mer verbose, roterande fil)
 ssh root@192.168.1.97 "tail -f /config/ocpp_charger_debug.log"
 ```
+
+**Deploy-varning:** `*.py` kopierar bara Python-filer. `services.yaml`, `strings.json`, `sv.json`, `manifest.json` och
+`translations/` följer inte med – kopiera dem explicit när de ändrats (annars fungerar nya tjänster men saknar fält i
+Developer Tools). Ändringar i `.py` och `services.yaml` kräver full HA-omstart. En ny `.py`-modul som `__init__.py` importerar
+följer med globben, men glöms den vid selektiv kopiering laddas hela integrationen inte.
 
 ## Filstruktur
 ```
