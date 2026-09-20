@@ -82,6 +82,7 @@ from .const import (
     DEFAULT_CHARGE_EFFICIENCY,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    LOG_FILE_NAME,
     MQTT_COMMAND_TOPIC,
     MQTT_METER_TOPIC,
     MQTT_RESPONSE_TOPIC,
@@ -111,6 +112,7 @@ from .deadline import compute_deadline, helper_state_to_hhmm
 from .soc_estimate import estimate_soc
 from .charging_start import restore_charging_start, serialize_charging_start
 from .clear_profile import parse_clear_request, refused_result
+from . import logging_setup
 from .notifier import ChargerNotifier
 from .vehicle_detection import identify_vehicle
 
@@ -128,20 +130,12 @@ PLATFORMS: list[Platform] = [
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OCPP EV Charger from a config entry."""
-    from logging.handlers import RotatingFileHandler
-
-    _ocpp_file_handler = RotatingFileHandler(
-        "/config/ocpp_charger_debug.log",
-        maxBytes=5 * 1024 * 1024,  # 5 MB per fil
-        backupCount=3,              # 3 rotationer = max 20 MB totalt
+    # Feature 9: fil (alla nivåer, dygnsrotation), HA-logg (WARNING+) och valfri syslog.
+    # Överst så att uppstartsloggar också hamnar rätt.
+    log_cfg = logging_setup.config_from_entry_data(entry.data)
+    await hass.async_add_executor_job(
+        logging_setup.apply_logging, log_cfg, hass.config.path(LOG_FILE_NAME)
     )
-    _ocpp_file_handler.setLevel(logging.DEBUG)
-    _ocpp_file_handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s – %(message)s")
-    )
-    ocpp_logger = logging.getLogger("custom_components.ocpp_charger")
-    if not any(isinstance(h, RotatingFileHandler) for h in ocpp_logger.handlers):
-        ocpp_logger.addHandler(_ocpp_file_handler)
 
     hass.data.setdefault(DOMAIN, {})
 
@@ -359,16 +353,11 @@ async def _async_update_listener(
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    from logging.handlers import RotatingFileHandler
-
     coordinator: OCPPCoordinator = hass.data[DOMAIN][entry.entry_id]
     await coordinator.async_stop()
 
-    ocpp_logger = logging.getLogger("custom_components.ocpp_charger")
-    for h in list(ocpp_logger.handlers):
-        if isinstance(h, RotatingFileHandler):
-            ocpp_logger.removeHandler(h)
-            h.close()
+    # Efter async_stop() så att stoppmeddelandena hinner loggas.
+    await hass.async_add_executor_job(logging_setup.remove_logging)
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
