@@ -178,6 +178,41 @@ def test_apply_sets_propagate_false_and_debug_and_remove_restores():
         logger.propagate = True
 
 
+class FakeHassLogger(logging.Logger):
+    """Modell av HA:s HassLogger (components/logger/__init__.py): setLevel() är en no-op för loggers med en
+    override (logger: i configuration.yaml, logger.set_level, UI-knappen "Aktivera felsökning");
+    orig_setLevel() går förbi den."""
+
+    overrides = set()
+
+    def setLevel(self, level):
+        if self.name in self.overrides:
+            return
+        super().setLevel(level)
+
+    def orig_setLevel(self, level):
+        super().setLevel(level)
+
+
+def test_debug_wins_over_an_ha_logger_override_and_the_level_is_restored():
+    logger = logging.getLogger(COMPONENT)
+    old_class, old_level, old_propagate = logger.__class__, logger.level, logger.propagate
+    logger.__class__ = FakeHassLogger
+    FakeHassLogger.overrides = {COMPONENT}
+    logger.orig_setLevel(logging.WARNING)  # nivån som HA:s override satte
+    try:
+        with applied():
+            assert logger.level == logging.DEBUG  # apply_logging kom förbi overriden
+            assert logger.propagate is False
+        assert logger.level == logging.WARNING  # remove_logging återställde nivån, också förbi overriden
+        assert logger.propagate is True
+    finally:
+        FakeHassLogger.overrides = set()
+        logger.__class__ = old_class
+        logger.setLevel(old_level)
+        logger.propagate = old_propagate
+
+
 def test_remove_leaves_foreign_handlers_alone():
     logger = logging.getLogger(COMPONENT)
     foreign = logging.NullHandler()

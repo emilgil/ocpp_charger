@@ -145,7 +145,8 @@ class RateLimitedSysLogHandler(logging.handlers.SysLogHandler):
         if not self._failing:
             self._failing = True
             _LOGGER.warning(
-                "[Logging] Syslog UDP-sändning till %s:%s misslyckades: %s – tystar tills den lyckas igen",
+                "[Logging] Syslog UDP-sändning till %s:%s misslyckades: %s – tystar tills den lyckas igen "
+                "(återställningen loggas som INFO i debugfilen)",
                 *self.address,
                 sys.exc_info()[1],
             )
@@ -185,6 +186,17 @@ def _build_file_handler(log_path: str) -> logging.Handler:
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(logging.Formatter(FILE_FORMAT))
     return handler
+
+
+def _set_level(logger: logging.Logger, level: int) -> None:
+    """Logger.setLevel som går förbi HA:s logger-integration.
+
+    HA byter loggerklass (HassLogger) och gör setLevel() till en no-op för loggers som har en override
+    (logger: i configuration.yaml, logger.set_level, UI-knappen "Aktivera felsökning"). Då fick
+    debugfilen tyst inte DEBUG/INFO och nivån återställdes inte heller. HA:s egna hjälpare använder
+    samma orig_setLevel.
+    """
+    getattr(logger, "orig_setLevel", logger.setLevel)(level)
 
 
 # ── Tillstånd, apply / remove ─────────────────────────────────────────────────
@@ -233,7 +245,7 @@ def apply_logging(config: LoggingConfig, log_path: str) -> None:
         _state = _State(listener, handlers, logger.level, logger.propagate)
         logger.addHandler(forward)
         logger.addHandler(to_queue)
-        logger.setLevel(logging.DEBUG)
+        _set_level(logger, logging.DEBUG)
         logger.propagate = False
 
     # Efter att kedjan är på plats så att varningen når både HA-loggen och filen.
@@ -263,5 +275,5 @@ def remove_logging() -> None:
         finally:
             for handler in state.handlers:
                 handler.close()
-            logger.setLevel(state.prev_level)
+            _set_level(logger, state.prev_level)
             logger.propagate = state.prev_propagate
