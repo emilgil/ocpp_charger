@@ -49,11 +49,21 @@ planeraren eller koordinatorn.
 | `tests/test_logging_setup.py` | 26 tester: config-parsning, propagate/nivå-återställning, HA:s logger-override (fejkad `HassLogger`), idempotens, HA-vidarebefordran (även HA:s root-nivå), fil (alla nivåer, rotation, traceback), syslog av/på/nivå/ogiltig värd, `handleError`-rate-limit; mutationskontrollerade |
 | `tests/test_feature9_wiring.py` | 17 tester: `__init__.py`-kopplingen (ast), options-flow-klassen mot fejkade beroenden (fejk-voluptuous som fyller i `default` för utelämnade nycklar, så "rensat fält" modelleras som HA gör), JSON-texter; fångar saknade const-importer och icke-awaitade executor-anrop / felordnade argument (mutationskontrollerade) |
 
-**Verifiering:** Enhetstester lokalt (26 + 17), mutationskontroll av modulen. **Live-verifiering återstår** – se `feature9.md`
-"Verifiering efter deploy" (HA-loggen utan INFO/DEBUG, filen växer, datumsuffixad fil efter midnatt, Graylog tar emot, verbose av/på,
-felaktig värd ger en enda warning). Extra live-steg efter slutgranskningen: (i) `/config/ocpp_charger_debug.log` innehåller DEBUG-rader
-direkt efter omstarten utan att `logger.set_level` körts; (ii) Inställningar → System → Loggar visar `logging_setup.py` som källa för
-komponentens varningar (se "Kända begränsningar" nedan); (iii) `ha core logs` saknar `--- Logging error ---` (annars kan filen inte skrivas).
+**Verifiering:** Enhetstester lokalt (26 + 17), mutationskontroll av modulen. **Deployad och live-verifierad 2026-09-20** (HA 2026.9.3,
+omstart 10:50 lokal tid; ingen laddning pågick och kabeln var urkopplad):
+- Entryn `loaded`, 41 entiteter före och efter, laddaren återanslöt.
+- `home-assistant.log` fick från komponenten bara 2 WARNING och 0 INFO/DEBUG efter omstarten. Debugfilen fick DEBUG/INFO/WARNING direkt
+  utan att `logger.set_level` körts, med samma två varningar som HA-loggen. Inga `--- Logging error ---` i `ha core logs`.
+- Options-steget renderas i riktiga HA: menyn har "logging" före "done" och `syslog_host` har `suggested_value` men ingen `default`.
+- Verbose på och av via options-flödet (tomt värdfält utelämnat som frontenden gör): reloaden gick rent (entryn `loaded`). HA-loggen
+  fick DEBUG/INFO med verbose och blev tyst efter avstängning medan debugfilen fortsatte växa. Inga dubbletter i logg eller fil.
+- Osökbar syslog-värd (`nonexistent.invalid`): exakt en WARNING i HA-loggen (och i filen), integrationen fortsatte fungera. Ett tomt
+  värdfält igen gav inga fler varningar och sparade `syslog_host: ""`. Efter testerna står entryn med standardvärdena
+  (`log_verbose_ha: false`, `syslog_host: ""`, port 1514, `DEBUG`).
+- Bekräftat live: `system_log` anger `logging_setup.py:118` som källa för komponentens varningar (se "Kända begränsningar").
+
+**Återstår att verifiera:** Graylog tar emot syslog-paketen (specens steg 4, kräver en Graylog-input), datumsuffixad fil efter första
+midnatten (steg 3), och att gamla `ocpp_charger_debug.log.1`–`.3` (5 MB vardera) raderas manuellt.
 
 **Övergång vid deploy:** full HA-omstart; kopiera `*.py`, `strings.json`, `sv.json` och `translations/sv.json` explicit (de följer
 inte med `*.py`-globben). Ett ev. `logger:`-block för komponenten i `configuration.yaml` behövs inte och kan tas bort (koden sätter

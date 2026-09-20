@@ -512,7 +512,7 @@ propagate återställs vid unload.
   UTF-8-BOM men en avslutande NUL, som är avstängd. Multi-line-poster (tracebacks) blir ett datagram; över ~1 400 byte kan det
   fragmenteras eller trunkeras. Gamla `ocpp_charger_debug.log.1`–`.3` från `RotatingFileHandler` rensas inte och räknas inte in i de
   14 dygnen – radera manuellt. HA:s egna loggrader om integrationen (`homeassistant.setup` m.fl.) berörs inte.
-  Inställningar → System → Loggar visar `logging_setup.py:118` som källa för komponentens varningar/fel (system_log tar första
+  Inställningar → System → Loggar visar `logging_setup.py:118` som källa för komponentens varningar/fel (bekräftat live 2026-09-20) (system_log tar första
   anropsramen under config-katalogen och det blir `HaForwardHandler.emit`); meddelande, nivå, tid och loggernamn är rätta och
   poster med `exc_info` får rätt källa – ingen ren kodlösning, verifieras live efter deploy. Poster som loggas mellan
   `remove_logging()` och nästa `apply_logging()` vid en omladdning (under en sekund) går varken till filen eller (under WARNING)
