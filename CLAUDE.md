@@ -486,7 +486,8 @@ och `charging_started_at` (Bug 43) mellan omstarter.
 ## Loggning (Feature 9)
 `logging_setup.py` (stdlib-only) äger all loggkonfiguration. `async_setup_entry()` anropar `apply_logging()` överst (via executor)
 och `async_unload_entry()` `remove_logging()` efter `coordinator.async_stop()`. Komponentloggern `custom_components.ocpp_charger`
-sätts till DEBUG med `propagate = False`; tidigare nivå och propagate återställs vid unload.
+sätts till DEBUG via `orig_setLevel` (`_set_level()`) med `propagate = False`; tidigare nivå (också via `_set_level()`) och
+propagate återställs vid unload.
 - **Fil:** `hass.config.path(LOG_FILE_NAME)` = `/config/ocpp_charger_debug.log`. Alla nivåer, ny fil vid midnatt
   (`TimedRotatingFileHandler`, `when="midnight"`), 14 dygn sparas; roterade filer får datumsuffix
   (`ocpp_charger_debug.log.2026-09-18`). Skrivs av en egen tråd (`QueueHandler` → `QueueListener`), aldrig i HA:s event-loop.
@@ -495,20 +496,27 @@ sätts till DEBUG med `propagate = False`; tidigare nivå och propagate återst�
   Filtrera som förut med `grep -i ocpp_charger`.
 - **Syslog UDP (valfritt):** options → "📝 Edit logging settings" → värd, port (standard 1514), lägsta nivå (standard DEBUG). Tom värd = av.
   Facility `local0`, tag `ocpp_charger`, ingen avslutande NUL-byte. Värdnamnet slås upp en gång vid start (IP används sedan).
-  Okänd värd eller sändningsfel ger EN warning och fäller aldrig setup; upprepade sändningsfel tystas tills sändningen fungerar igen.
+  Okänd värd eller sändningsfel ger EN warning och fäller aldrig setup; upprepade sändningsfel tystas tills sändningen fungerar igen
+  (återställningen loggas som INFO i debugfilen).
   `syslog_host` har medvetet ingen `default=` i formuläret utan förifylls med `description={"suggested_value": ...}`: HA-frontend
   utelämnar tomma fält och voluptuous fyller i den gamla värden igen om fältet har `default=`, så en sparad värd kunde aldrig
   rensas (port, nivå och verbose-valet har `default=`).
-- **Ändra inställningarna:** options-flowets `_save()` laddar om config entry → unload + setup tillämpar de nya värdena
-  (laddaren återansluter, som vid alla options-ändringar).
-- **`logger:` i `configuration.yaml`:** behövs inte – koden sätter DEBUG själv, så ett `logger:`-block för komponenten
-  (t.ex. `custom_components.ocpp_charger: debug`) kan tas bort. `logger.set_level` mot komponenten påverkar fil och syslog
-  (de får det loggern släpper igenom).
+- **Ändra inställningarna:** options-flowets `_save()` (vid ✅ Save and close) laddar om config entry → unload + setup tillämpar
+  de nya värdena (laddaren återansluter, som vid alla options-ändringar).
+- **`logger:`-blocket:** behövs inte och kan tas bort – koden sätter DEBUG själv via `orig_setLevel`, som går förbi HA:s
+  logger-override (`HassLogger.setLevel()` är annars en no-op för loggers med override: `logger:` i configuration.yaml,
+  `logger.set_level`, UI-knappen "Aktivera felsökning"). `logger.set_level` mot komponenten efter start gäller (HA använder samma
+  `orig_setLevel`) och påverkar fil och syslog (de får det loggern släpper igenom).
 - **Kända begränsningar:** UDP är opålitligt (filen är den pålitliga kopian). Syslog-paketet har ingen TIMESTAMP/HOSTNAME-header
-  (Graylog sätter mottagningstid och avsändar-IP); Python 3 lägger **ingen** UTF-8-BOM men en avslutande NUL, som är avstängd.
-  Multi-line-poster (tracebacks) blir ett datagram; över ~1 400 byte kan det fragmenteras eller trunkeras. Gamla
-  `ocpp_charger_debug.log.1`–`.3` från `RotatingFileHandler` rensas inte och räknas inte in i de 14 dygnen – radera manuellt.
-  HA:s egna loggrader om integrationen (`homeassistant.setup` m.fl.) berörs inte.
+  (Graylog förväntas sätta mottagningstid och avsändar-IP – otestat mot användarens instans); Python 3 lägger **ingen**
+  UTF-8-BOM men en avslutande NUL, som är avstängd. Multi-line-poster (tracebacks) blir ett datagram; över ~1 400 byte kan det
+  fragmenteras eller trunkeras. Gamla `ocpp_charger_debug.log.1`–`.3` från `RotatingFileHandler` rensas inte och räknas inte in i de
+  14 dygnen – radera manuellt. HA:s egna loggrader om integrationen (`homeassistant.setup` m.fl.) berörs inte.
+  Inställningar → System → Loggar visar `logging_setup.py:118` som källa för komponentens varningar/fel (system_log tar första
+  anropsramen under config-katalogen och det blir `HaForwardHandler.emit`); meddelande, nivå, tid och loggernamn är rätta och
+  poster med `exc_info` får rätt källa – ingen ren kodlösning, verifieras live efter deploy. Poster som loggas mellan
+  `remove_logging()` och nästa `apply_logging()` vid en omladdning (under en sekund) går varken till filen eller (under WARNING)
+  till HA-loggen.
 
 ## Testinstans
 | Parameter | Värde |
