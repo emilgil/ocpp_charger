@@ -110,6 +110,7 @@ from .price_cap import select_price_cap_slots
 from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline, helper_state_to_hhmm
 from .soc_estimate import estimate_soc
+from .cable_flag import restore_cable_was_available
 from .charging_start import restore_charging_start, serialize_charging_start
 from .clear_profile import parse_clear_request, refused_result
 from . import logging_setup
@@ -521,6 +522,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         # kabelsession armerade en falsk "genuin inkoppling" som fyrade vid nästa
         # transaktionspaus (RemoteStop → Finishing → Preparing) och raderade
         # _session_total_kwh, förfalskade SoC-estimatet och skickade falsk Inkopplad-notis.
+        # Bug 44: restored from Store in _load_state(); False here is only the first-run default.
         self._cable_was_available: bool = False  # Bug 13A/38: True only after genuine Available status
         # Cable session tracking (Bug 6): spans cable-in → cable-out
         self._cable_session_energy_kwh: float = 0.0
@@ -640,6 +642,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "total_cost": state.total_cost if state else 0.0,
             "cable_session_energy_kwh": self._cable_session_energy_kwh,
             "cable_session_cost_sek": self._cable_session_cost_sek,
+            "cable_was_available": self._cable_was_available,   # Bug 44: survive restart
             "session_start_soc": self._session_start_soc,   # Bug 30: SOC estimation baseline
             "session_total_kwh": self._session_total_kwh,   # Bug 30: energy paired with that baseline
             "session_plan_intervals": (   # Bug 31: persist Bug 28 frozen plan (was in-memory only)
@@ -676,6 +679,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.ocpp.state.total_cost = data.get("total_cost", 0.0)
             self._cable_session_energy_kwh = data.get("cable_session_energy_kwh", 0.0)
             self._cable_session_cost_sek = data.get("cable_session_cost_sek", 0.0)
+            # Bug 44: restore the "genuine Available seen" flag. Without it the first Preparing
+            # after a restart/reload is classified as a Garo reset and the cable-session
+            # accumulators are never cleared (Garo doesn't resend StatusNotification on reconnect,
+            # so no Available follows). Must read cable_connected AFTER it was loaded above.
+            self._cable_was_available = restore_cable_was_available(
+                data.get("cable_was_available"),
+                cable_connected=self.ocpp.state.cable_connected,
+                current=self._cable_was_available,
+            )
+            _LOGGER.debug(
+                "[Bug44] Återställde cable_was_available=%s (cable_connected=%s)",
+                self._cable_was_available, self.ocpp.state.cable_connected,
+            )
             # Feature 6: manual deadline lives in the input_datetime helper now;
             # any legacy "manual_deadline" key in old Store data is ignored.
             self.price_cap_ore_kwh = float(data.get("price_cap_ore_kwh", 0.0))  # Feature 5
