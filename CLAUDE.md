@@ -207,6 +207,16 @@ av integrationen. De hänger ihop och ska förstås tillsammans:
   laddning** (trigger-svaret `Charging` förlitar sig på Bug 43 mot dubbel start-push); Bug 45 Del 3. Är HA nere både när kabeln dras ur och när den kopplas
   in igen är den sparade flaggan False och inkopplingen klassas fortfarande som Garo-reset (kvarvarande begränsning, Bug 44).
 
+### Manuell start och strömgräns (Bug 47)
+`async_start_charging()` (Start-knappen och `async_start_if_ready()` i Immediate) skickar `self.max_current` – samma värde som auto-start
+(`_auto_start_with_limit(self.max_current)`). Den tidigare prisskalningen (`smart_controller.recommended_current()`: 11 A nära prisgränsen, 6 A över den)
+används inte längre; funktionen finns kvar i `smart_charge.py` men anropas inte. Loggrad: `[Bug47] Manuell start: begränsning N A`.
+`OCPPClient._pending_limit_a` = **senast begärda** gräns: sätts som första sats i `set_charging_limit()` och skrivs inte om vid svar. StartTransaction-handlern
+och "StartTransaction missad"-återhämtningen återapplicerar den, så ett överlappande anrops (sena) svar får aldrig skriva tillbaka ett äldre värde. Avvisas en begäran
+ligger det önskade värdet kvar och nästa transaktionsstart försöker igen. `_apply_current_schedule()` nollställer den som förut vid schemabyte.
+Tester: `tests/test_bug47.py` (rot-venv). **Deployad 2026-09-21; kvar att live-verifiera:** manuell start med inkopplad bil ska ge `[Bug47] … 16 A`, alla
+`GaroOwnerMaxCurrent` = 16 och `Current.Offered` = 16 A (kabeln var urkopplad vid deploy). Själva racet (manuell start + auto-start i samma sekund) är bara enhetstestat.
+
 ## Nyckelkonstanter (const.py)
 ```python
 DEFAULT_CHARGE_DEADLINE_HOUR        = 6      # Laddning klar senast 06:00

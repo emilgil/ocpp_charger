@@ -1495,11 +1495,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
         if not self.ocpp.state.connected:
             _LOGGER.warning("Cannot start: charger not connected")
             return
-        new_limit = self.smart_controller.recommended_current(
-            self.max_current, self.current_price, self.charge_mode
-        )
-        self.current_limit_a = new_limit
-        await self.ocpp.set_charging_limit(new_limit)
+        # Bug 47: schemats/max-gränsen direkt, precis som auto-start (_auto_start_with_limit).
+        # Prisskalningen (recommended_current) gav 11 A (6 A över tröskeln) som skrev över 16 A
+        # och stämmer inte med planerarens antagande om full schemaström per slot.
+        _LOGGER.info("[Bug47] Manuell start: begränsning %.0f A (mode=%s)", self.max_current, self.charge_mode)
+        self.current_limit_a = self.max_current
+        await self.ocpp.set_charging_limit(self.max_current)
         self._manual_start_requested = True
         # Bug 28: freeze current plan windows for this manually-started session.
         if self.charge_plan and self.charge_plan.active_intervals:

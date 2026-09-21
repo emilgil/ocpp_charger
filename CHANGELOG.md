@@ -1,5 +1,35 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-21: Bug 47 – Manuell start satte prisskalad ström (11 A) som skrev över 16 A
+
+**Symptom:** Laddningen gick med ca 7,4 kW (11 A per fas) i stället för 11 kW (16 A) hela sessionen 21/9 kl 15:12–16:17, trots att schemat loggade
+`Period=Day limit=16 A` och `max_current` stod på 16 A. Boxen erbjöd 11 A (`Current.Offered`) och startnotisen sa "Laddström: 11 A (7.5 kW)".
+Inte samma sak som Feature 8 (boxens egen 13 A-profil): här skickade integrationen själv 11 A.
+
+**Rotorsak – två oberoende fel:**
+1. `async_start_charging()` (Start-knappen och `async_start_if_ready()`) räknade ström med `smart_controller.recommended_current()`, som i Smart-läge skalar
+   ned strömmen nära prisgränsen (16 → 11,2 A) eller över den (6 A). Kvarlevande logik från före planeraren; planeraren räknar redan med full schemaström
+   per slot. Start-knappens tidsstämpel i HA (`13:12:54.499Z`) matchar första `GaroOwnerMaxCurrent=11` inom en millisekund.
+2. Race i `OCPPClient.set_charging_limit()`: `_pending_limit_a` sattes först när boxen svarat `Accepted`. Auto-start begärde 16 A i samma sekund, Garos
+   `StartTransaction` hann före 16-svaret, och handlern läste den föråldrade 11 och skickade den sist. Med dag- och nattström båda 16 A rensas
+   `_pending_limit_a` aldrig av `_apply_current_schedule()`, så varje ny Garo-transaktion (15-minutersomstarterna) återapplicerade 11 A.
+
+**Åtgärd:**
+- `__init__.py` `async_start_charging()`: skickar `self.max_current` (som auto-start via `_auto_start_with_limit`) och loggar `[Bug47] Manuell start: begränsning N A`.
+  Följd: en manuell start i Smart-läge över prisgränsen ger nu full ström (förut 6 A). `recommended_current()` i `smart_charge.py` är orörd men oanvänd.
+- `ocpp_client.py` `set_charging_limit()`: registrerar den begärda gränsen i `_pending_limit_a` direkt (första satsen), **och skriver inte om den vid svar** –
+  ett sent svar på en äldre begäran skulle annars skriva tillbaka det gamla värdet över en nyare begäran. `_pending_limit_a` betyder därmed "senast begärda gräns",
+  även om boxen avvisade den (nästa `StartTransaction` försöker då igen; förut låg det senast godkända värdet kvar). Ingen lock (retry-loopen har `sleep(2)`).
+
+**Tester:** `tests/test_bug47.py` (4 st, rot-venv): manuell start ger 16 A oavsett pris (11 A-, 6 A- och full-gren), begärd gräns registreras före svar,
+incidentens sekvens 11 → 16 → `StartTransaction` ger `[11, 16, 16]` (var `[11, 16, 11]`), och ett sent svar på en äldre begäran skriver inte över en nyare.
+Hela sviten: 200 passerar (baslinje 196).
+
+**Deploy 2026-09-21 22:17** (`__init__.py` + `ocpp_client.py`, full HA-omstart, kabeln urkopplad, ingen laddning). Start-kontroll OK: inga WARNING/ERROR/Traceback i
+debugloggen sedan omstarten, Bug 44/45/46-raderna som förut, `Period=Night limit=16 A`.
+**Ej live-verifierat:** manuell start med inkopplad bil – `[Bug47] Manuell start: begränsning 16 A`, alla `GaroOwnerMaxCurrent` = 16 och `Current.Offered` = 16 A återstår att
+bekräfta vid nästa inkoppling (kabeln var urkopplad vid deploy). Själva racet (manuell start + auto-start inom samma sekund) är bara enhetstestat, inte live-framkallat.
+
 ## 2026-09-21: Bug 44 + 45 + 46 – Omstartsvägen: Session Energy nollställdes inte efter omladdning
 
 **Symptom:** `sensor.ev_charger_garocs_48671aa056e80_session_energy` nollställdes inte när kabeln kopplades in 21/9 kl 15:10 – den stod på
