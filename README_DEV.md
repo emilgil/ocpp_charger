@@ -137,7 +137,7 @@ _alt_plan: ChargePlan | None              # alternativ plan för jämförelse
 |----------|-----------|
 | Strömgräns via `ChangeConfiguration key=GaroOwnerMaxCurrent` | Fungerar. ChargePointMaxProfile och TxProfile Rejected. |
 | Autostart vid inkoppling utan RemoteStartTransaction | Garo startar automatiskt – HA behöver inte skicka RemoteStart |
-| Skickar INTE om StartTransaction/StatusNotification vid reconnect | `transaction_id` läses från MeterValues-payload. `TriggerMessage StatusNotification` skickas 10s efter HA-start |
+| Skickar INTE om StartTransaction/StatusNotification vid reconnect | `transaction_id` läses från MeterValues-payload. `TriggerMessage StatusNotification` skickas vid varje (åter)anslutning efter att Store lästs (Bug 45; Garo återansluter 22–31 s efter serverstart) |
 | Per-fas ström (L1/L2/L3), inget totalt faslöst värde | `current_a = mean(L1, L2, L3)` |
 
 ## Entiteter
@@ -217,7 +217,7 @@ Notiserna är åtgärdbara: `ocpp_use_day_charging` / `ocpp_use_night_charging`.
 
 ## Persistens (Store)
 
-`self._store` (HA Storage) sparar `cable_connected`, `transaction_id` och laddstartstiden (`charging_started_at`, Bug 43) mellan omstarter.
+`self._store` (HA Storage) sparar `cable_connected`, `transaction_id`, laddstartstiden (`charging_started_at`, Bug 43) och `cable_was_available` (Bug 44) mellan omstarter.
 
 - `_save_state()` anropas i varje `_async_update_data()`-cykel
 - `_load_state()` anropas i `_delayed_soc_refresh()` (10s efter HA-start)

@@ -174,17 +174,22 @@ class OCPPClient:
         except Exception as err:
             _LOGGER.error("Error handling charger message: %s", err)
         finally:
-            self.state.connected = False
-            if self.state.charging and self.state._charging_start:
-                delta = datetime.now(timezone.utc) - self.state._charging_start
-                self.state.accumulated_charging_seconds += int(delta.total_seconds())
-                self.state._charging_start = None
-            self.state.charging = False
-            self.state.power_w = 0.0
-            self.state.current_a = 0.0
-            self._ws = None
-            _LOGGER.warning("[OCPP] Charger %s disconnected", charger_id)
-            self._notify()
+            if self._ws is not websocket:
+                # Bug 45: a newer connection took over while this one was still open (Garo reconnected
+                # before HA's old socket timed out). The state and _ws belong to that connection now.
+                _LOGGER.info("[OCPP] Gammal anslutning stängd, nyare aktiv – rör inte state")
+            else:
+                self.state.connected = False
+                if self.state.charging and self.state._charging_start:
+                    delta = datetime.now(timezone.utc) - self.state._charging_start
+                    self.state.accumulated_charging_seconds += int(delta.total_seconds())
+                    self.state._charging_start = None
+                self.state.charging = False
+                self.state.power_w = 0.0
+                self.state.current_a = 0.0
+                self._ws = None
+                _LOGGER.warning("[OCPP] Charger %s disconnected", charger_id)
+                self._notify()
 
     # ------------------------------------------------------------------ #
     #  Message handling                                                     #

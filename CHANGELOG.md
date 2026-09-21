@@ -1,5 +1,71 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-21: Bug 44 + 45 + 46 – Omstartsvägen: Session Energy nollställdes inte efter omladdning
+
+**Symptom:** `sensor.ev_charger_garocs_48671aa056e80_session_energy` nollställdes inte när kabeln kopplades in 21/9 kl 15:10 – den stod på
+förra kabelsessionens 51,25 kWh och räknade uppåt därifrån. Integrationen hade laddats om sex gånger 20/9 (10:51–11:56).
+
+**Rotorsak – tre lager på samma väg (omstart/omladdning):**
+1. **Bug 45:** Garo återansluter 22–31 s efter OCPP-serverns start och skickar inte om sin status. Startup-triggern (`TriggerMessage`, +10 s)
+   skickades bara om laddaren redan var ansluten då → `connector_status` förblev `Unknown` i över ett dygn, ingen `Available` observerades.
+2. **Bug 44:** `_cable_was_available` (Bug 13A/38, "en äkta Available har setts sedan förra inkopplingen") låg bara i minnet. Efter omladdningen
+   var den `False`, så den riktiga inkopplingen klassades som Garo-reset i stället för genuin och kabelsessionens ackumulatorer
+   (`_cable_session_energy_kwh`, `_cable_session_cost_sek`) nollställdes aldrig.
+3. **Bug 46:** `_load_state()` återställde sparat fordon (Enyaq) via `set_active_vehicle()`, men en färsk koordinator startar alltid på
+   `vehicles[0]` (eNiro) → `[Vehicle] Switching eNiro → Enyaq` vid varje omstart (sex gånger 20/9; konfigurationens ordning eNiro, Enyaq).
+   `_session_total_kwh` nollades och Bug 41-flaggan `_vehicle_switch_pending_reset` armerades. Den felklassade `Preparing` tog Bug 41-grenen
+   och nollade SOC-estimatets energibas (`[Bug41]`-raden 21/9 15:10).
+
+**Åtgärd:**
+- **Bug 44:** `cable_flag.restore_cable_was_available(saved, cable_connected=, current=)` (ren, stdlib-only). `_save_state()` skriver
+  `cable_was_available`; `_load_state()` återställer efter att `cable_connected` lästs in. En sparad bool gäller; en gammal Store utan nyckeln →
+  `not cable_connected` (migrering, Bug 38-skyddet bevaras); en redan satt live-flagga skrivs inte över (laddningen körs ~10 s efter start).
+  Flaggan kan inte härledas ur `cable_connected` ensamt: den är `False` även för Faulted/Unavailable med kabeln i (`ocpp_client.py`).
+- **Bug 45 Del 1:** `_request_status_refresh()` skickar TriggerMessage vid varje (åter)anslutning efter att Store lästs (kantdetektering i
+  `_on_charger_state_update_async` + startup-timern). Retry max 3 gånger (`STATUS_TRIGGER_MAX_ATTEMPTS`), 10 s emellan
+  (`STATUS_TRIGGER_RETRY_SECONDS`), medan status är `Unknown` och laddaren ansluten. Före Store-laddningen skickas ingen (`_load_state` skulle
+  skriva över en färsk status). Beslut 2026-09-21: trigger vid **varje** återanslutning, inte bara vid Unknown.
+- **Bug 45 Del 2:** första kända status efter omstart (`_last_connector_status_notify` är `""`/`"Unknown"`) är en resync, inte en Garo-reset:
+  `Preparing` lägger inte `state.energy_kwh` ovanpå den redan återställda `_session_total_kwh` (Bug 30).
+- **Bug 45 Del 3:** `_handle_charger()`s `finally` städar bara om `self._ws` fortfarande är just den socketen. En gammal, halvöppen anslutning
+  som avslutas efter en återanslutning nollade annars `connected`/`_ws`/effekt för den nya. Kodgranskning – **inte observerad i loggarna**
+  (alla connect/disconnect-par 20/9 är i ordning).
+- **Bug 46:** `set_active_vehicle(vehicle, *, restore=False)`; `_load_state()` anropar med `restore=True`, som hoppar över bytesblocket.
+  Övriga anrop (notisval, auto-detect, select) är oförändrade, så Bug 41 gäller kvar för riktiga byten.
+
+**Samspel:** Bug 45 Del 2 förutsätter Bug 46 (Bug 41-grenen ligger före och nollar annars energibasen). Bug 44 är skyddsnätet om Garo aldrig
+svarar på triggern. Trigger-svarets `Available` ger ingen falsk stopp-push (Bug 12-vakten i `_send_stop_notification` avbryter när kabeln är ur).
+
+**Avvikelser från specarna** (`bug44.md`, `bug45.md`, `bug46.md`): Bug 44 Del 2 (koppla loss nollställningen från `notify_on_connect`) ingår
+inte – inställningen är på i driftsatt konfiguration. Ingen `status_trigger.py` och ingen 5 s-debounce i Bug 45: villkoren är enradare och
+testas genom den riktiga koordinatorn, och de två utlösarna kan inte dubbelfyra (kantdetektorn kräver `_state_loaded`; startup-timern körs
+utan `await` efter laddningen). Ingen `is_real_vehicle_switch()` i Bug 46: bytet testas genom riktiga `_load_state()`/`set_active_vehicle()`.
+
+| Fil | Ändring |
+|-----|---------|
+| `cable_flag.py` | Ny modul (stdlib-only): `restore_cable_was_available()` |
+| `const.py` | +`STATUS_TRIGGER_MAX_ATTEMPTS`, `STATUS_TRIGGER_RETRY_SECONDS` |
+| `__init__.py` | Bug 44: `cable_was_available` i `_save_state()`/`_load_state()`. Bug 45: `_state_loaded`, `_charger_was_connected`, `_request_status_refresh()`, kantdetektor i `_on_charger_state_update_async()`, `elif` i Garo-reset-grenen. Bug 46: `set_active_vehicle(restore=)` |
+| `ocpp_client.py` | `_handle_charger()`: `finally` städar bara den aktuella anslutningen (Bug 45 Del 3) |
+| `tests/coordinator_harness.py` | Delat sele: riktig `OCPPCoordinator` (riktig `__init__`, MagicMock-hass); bara Store, hass-tjänster och tid är fejkade. Körs med rot-venv (`/mnt/c/temp/github/claude/venv/bin/python`), hoppas över (SKIP) utan Home Assistant |
+| `tests/test_bug44.py`, `test_bug45.py`, `test_bug46.py`, `test_restart_path.py` | 9 + 9 + 3 + 3 tester. `test_restart_path.py` spelar upp incidenten: sent ansluten laddare, laddare som aldrig svarar, omstart mitt i en pausad session |
+
+**Verifiering:** Mutationskontroll 9 + 3 + 13 + 4 mutationer, alla fångas (två luckor hittades och stängdes: en `_save_state` som inte skriver
+nyckeln, och en retry som fortsätter efter bortkoppling). Backas någon av de tre fixarna faller minst ett end-to-end-scenario. Hela sviten
+(16 filer) går igenom.
+
+**Live 2026-09-21 21:20 (deploy + `ha core restart`, ingen laddning pågick, Store utan nyckeln → migreringen):**
+- `[Bug44] Återställde cable_was_available=False (cable_connected=True)` – migreringen och Bug 38-skyddet.
+- `[Bug46] Återställer fordon Skoda Enyaq utan bytesnollställning`, ingen `[Vehicle] Switching`-rad.
+- Garo anslöt 14 s efter serverstart, alltså efter +10 s-timern (Bug 45-scenariot): `[Bug45] TriggerMessage försök 1/3 (orsak=återanslutning)` i samma
+  millisekund som anslutningen, `Accepted`, `StatusNotification Preparing` 18 ms senare, sedan `[Bug45] Preparing är första kända status efter omstart – ingen ackumulering`.
+  Status är känd (`Preparing`, inte `Unknown`), inga WARNING/ERROR.
+
+**Kvar att live-verifiera:** (1) huvudfallet för Bug 44 – kabeln urdragen (`Available` loggad) → omladdning → inkoppling ska ge
+`[Bug13A] Genuine connect` och `[Session] Ny kabelsession – nollställer ackumulatorer`, och Session Energy 0; (2) omstart **mitt i en pågående
+laddning**: trigger-svaret `Charging` förlitar sig på Bug 43 för att inte ge en dubbel "Laddning startad"-push (täcks inte av testerna);
+(3) Bug 45 Del 3 (en gammal anslutning som stängs efter en återanslutning) har aldrig setts i loggarna.
+
 ## 2026-09-19: Feature 9 – Separat loggfil, tystare HA-logg och syslog-UDP (Graylog)
 
 **Bakgrund:** Integrationen skrev ca 20 000 loggrader per dygn (Heartbeat, `[Store] Sparade state`, `[Schedule] Period=...`,

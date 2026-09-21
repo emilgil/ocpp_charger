@@ -90,6 +90,8 @@ from .const import (
     MQTT_STATUS_TOPIC,
     SCAN_INTERVAL_SECONDS,
     SMART_CHARGE_PRICE_THRESHOLD_PERCENTILE,
+    STATUS_TRIGGER_MAX_ATTEMPTS,
+    STATUS_TRIGGER_RETRY_SECONDS,
 )
 from .ocpp_client import ChargerState, OCPPClient
 from .smart_charge import SmartChargeController
@@ -110,6 +112,7 @@ from .price_cap import select_price_cap_slots
 from .charge_windows import build_charge_windows, update_windows_actual
 from .deadline import compute_deadline, helper_state_to_hhmm
 from .soc_estimate import estimate_soc
+from .cable_flag import restore_cable_was_available
 from .charging_start import restore_charging_start, serialize_charging_start
 from .clear_profile import parse_clear_request, refused_result
 from . import logging_setup
@@ -404,6 +407,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self.auto_vehicle_detection: bool = True   # can be toggled via switch
         self._last_connector_status: str = ""
         self._last_connector_status_notify: str = ""  # separate tracker for notifications
+        # Bug 45: Garo doesn't resend its status when it reconnects, so ask for it after each (re)connect.
+        self._state_loaded: bool = False           # _load_state() finished (also when the Store was empty)
+        self._charger_was_connected: bool = False  # edge detector for the charger's WebSocket connect
         self._last_detection_reason: str = ""
         self.adhoc_vehicle_active: bool = False
 
@@ -521,6 +527,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         # kabelsession armerade en falsk "genuin inkoppling" som fyrade vid nästa
         # transaktionspaus (RemoteStop → Finishing → Preparing) och raderade
         # _session_total_kwh, förfalskade SoC-estimatet och skickade falsk Inkopplad-notis.
+        # Bug 44: restored from Store in _load_state(); False here is only the first-run default.
         self._cable_was_available: bool = False  # Bug 13A/38: True only after genuine Available status
         # Cable session tracking (Bug 6): spans cable-in → cable-out
         self._cable_session_energy_kwh: float = 0.0
@@ -571,11 +578,15 @@ class OCPPCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("[SOC] After refresh: soc_percent=%s source=%s", self.ocpp.state.soc_percent, self._soc_source)
             self._seed_price_history()
             # Restore persisted state before asking charger for StatusNotification
-            await self._load_state()
-            # Ask charger to resend StatusNotification so cable_connected is correct after HA restart
+            try:
+                await self._load_state()
+            finally:
+                self._state_loaded = True   # Bug 45: from now on a (re)connect may ask for the status
+            # Ask charger to resend StatusNotification so cable_connected is correct after HA restart.
+            # A charger that isn't connected yet (Garo needs 22-31 s) is handled by the connect edge in
+            # _on_charger_state_update_async (Bug 45).
             if self.ocpp.state.connected:
-                _LOGGER.info("[SOC] Skickar TriggerMessage vid startup")
-                await self.ocpp.trigger_status_notification()
+                self.hass.async_create_task(self._request_status_refresh("start"))
             if self.ocpp.state.soc_percent is not None:
                 self.async_set_updated_data(self.ocpp.state)
 
@@ -587,6 +598,28 @@ class OCPPCoordinator(DataUpdateCoordinator):
             unsub()
         self._mqtt_unsubscribers.clear()
         await self.ocpp.stop()
+
+    async def _request_status_refresh(self, reason: str) -> None:
+        """Bug 45: ask the charger for its current StatusNotification, retrying while it stays Unknown.
+
+        Garo doesn't resend its status when it reconnects, so after a restart/reload connector_status
+        stays "Unknown" (and no Available/Preparing edge is ever seen) until something physically happens
+        at the charger. The first attempt is always sent (every reconnect, not only when Unknown); further
+        attempts only while the status is still unknown and the charger still connected.
+        """
+        state = self.ocpp.state
+        for attempt in range(1, STATUS_TRIGGER_MAX_ATTEMPTS + 1):
+            if not state.connected:
+                return
+            if attempt > 1 and state.connector_status not in ("", "Unknown"):
+                return
+            _LOGGER.info(
+                "[Bug45] TriggerMessage försök %d/%d (orsak=%s)",
+                attempt, STATUS_TRIGGER_MAX_ATTEMPTS, reason,
+            )
+            await self.ocpp.trigger_status_notification()
+            if attempt < STATUS_TRIGGER_MAX_ATTEMPTS:
+                await asyncio.sleep(STATUS_TRIGGER_RETRY_SECONDS)
 
     # ------------------------------------------------------------------ #
     #  Data update                                                          #
@@ -640,6 +673,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "total_cost": state.total_cost if state else 0.0,
             "cable_session_energy_kwh": self._cable_session_energy_kwh,
             "cable_session_cost_sek": self._cable_session_cost_sek,
+            "cable_was_available": self._cable_was_available,   # Bug 44: survive restart
             "session_start_soc": self._session_start_soc,   # Bug 30: SOC estimation baseline
             "session_total_kwh": self._session_total_kwh,   # Bug 30: energy paired with that baseline
             "session_plan_intervals": (   # Bug 31: persist Bug 28 frozen plan (was in-memory only)
@@ -676,6 +710,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.ocpp.state.total_cost = data.get("total_cost", 0.0)
             self._cable_session_energy_kwh = data.get("cable_session_energy_kwh", 0.0)
             self._cable_session_cost_sek = data.get("cable_session_cost_sek", 0.0)
+            # Bug 44: restore the "genuine Available seen" flag. Without it the first Preparing
+            # after a restart/reload is classified as a Garo reset and the cable-session
+            # accumulators are never cleared (Garo doesn't resend StatusNotification on reconnect,
+            # so no Available follows). Must read cable_connected AFTER it was loaded above.
+            self._cable_was_available = restore_cable_was_available(
+                data.get("cable_was_available"),
+                cable_connected=self.ocpp.state.cable_connected,
+                current=self._cable_was_available,
+            )
+            _LOGGER.debug(
+                "[Bug44] Återställde cable_was_available=%s (cable_connected=%s)",
+                self._cable_was_available, self.ocpp.state.cable_connected,
+            )
             # Feature 6: manual deadline lives in the input_datetime helper now;
             # any legacy "manual_deadline" key in old Store data is ignored.
             self.price_cap_ore_kwh = float(data.get("price_cap_ore_kwh", 0.0))  # Feature 5
@@ -722,7 +769,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             if saved_vehicle:
                 match = next((v for v in self._vehicles if v.get(VEHICLE_NAME) == saved_vehicle), None)
                 if match:
-                    self.set_active_vehicle(match)
+                    self.set_active_vehicle(match, restore=True)   # Bug 46: not a vehicle switch
                     _LOGGER.info("[Store] Återställde aktivt fordon: %s", saved_vehicle)
                 else:
                     _LOGGER.warning("[Store] Sparat fordon '%s' finns inte längre i konfigurationen", saved_vehicle)
@@ -1493,11 +1540,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
             await self.ocpp.set_charging_limit(self.max_current)
         await self.async_refresh()
 
-    def set_active_vehicle(self, vehicle: dict) -> None:
-        """Switch the active vehicle, updating capacity and SOC entity immediately."""
+    def set_active_vehicle(self, vehicle: dict, *, restore: bool = False) -> None:
+        """Switch the active vehicle, updating capacity and SOC entity immediately.
+
+        restore=True (Bug 46): _load_state() putting back the vehicle that was active before a
+        restart. A fresh coordinator always starts on vehicles[0], so that would otherwise look like
+        a switch (eNiro → Enyaq) on every restart: it zeroed _session_total_kwh and armed the Bug 41
+        flag, so the next Garo-reset Preparing zeroed the SOC estimate's energy base again.
+        """
         prev_name = self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None
         new_name = vehicle.get(VEHICLE_NAME)
-        if prev_name and prev_name != new_name:
+        if restore:
+            _LOGGER.debug("[Bug46] Återställer fordon %s utan bytesnollställning", new_name)
+        elif prev_name and prev_name != new_name:
             _LOGGER.info(
                 "[Vehicle] Switching %s → %s, resetting session_total_kwh (was %.2f kWh)",
                 prev_name, new_name, self._session_total_kwh,
@@ -1731,6 +1786,15 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     "[Bug41] Preparing efter fordonsbyte – nollställer _session_total_kwh "
                     "(ignorerar stale state.energy_kwh=%.3f)",
                     self.ocpp.state.energy_kwh,
+                )
+            elif self._last_connector_status_notify in ("", "Unknown"):
+                # Bug 45: no status was known before this one (restart/reload: the TriggerMessage reply
+                # is the first StatusNotification), so nothing transitioned and this isn't a Garo reset.
+                # state.energy_kwh is already part of the restored _session_total_kwh (Bug 30);
+                # adding it again would double-count and push the SOC estimate too high.
+                _LOGGER.debug(
+                    "[Bug45] Preparing är första kända status efter omstart – ingen ackumulering "
+                    "(_session_total_kwh=%.3f)", self._session_total_kwh,
                 )
             else:
                 # Bug 33 / Fix 7: a Garo 15-min internal reset ends one transaction and
@@ -2727,6 +2791,13 @@ class OCPPCoordinator(DataUpdateCoordinator):
     @callback
     def _on_charger_state_update_async(self, state: ChargerState) -> None:
         """Main-thread handler for charger state changes."""
+        # Bug 45: the charger just (re)connected. Garo doesn't resend its status, so ask for it - but only
+        # once the Store is loaded (_load_state would overwrite a fresh status). Before that, the startup
+        # timer in async_start() sends the request.
+        connected = state.connected
+        if connected and not self._charger_was_connected and self._state_loaded:
+            self.hass.async_create_task(self._request_status_refresh("återanslutning"))
+        self._charger_was_connected = connected
         self._update_price_from_ha()
         self._apply_current_schedule()
         self._update_soc_from_ha()

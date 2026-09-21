@@ -99,6 +99,11 @@ MQTT_RESPONSE_TOPIC = "response"
 SCAN_INTERVAL_SECONDS = 10
 PRICE_UPDATE_INTERVAL = 300  # seconds
 
+# Bug 45: TriggerMessage(StatusNotification) after a charger (re)connect. Garo doesn't resend its status on
+# reconnect; if the reply doesn't arrive (status stays Unknown), retry a few times.
+STATUS_TRIGGER_MAX_ATTEMPTS = 3
+STATUS_TRIGGER_RETRY_SECONDS = 10
+
 # Smart charging: only charge if price below this percentile of 24h forecast
 SMART_CHARGE_PRICE_THRESHOLD_PERCENTILE = 0.4
 
