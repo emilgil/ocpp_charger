@@ -116,6 +116,7 @@ VEHICLE_NAME = "name"
 VEHICLE_CAPACITY = "capacity_kwh"
 VEHICLE_MAX_CURRENT_A = "max_current_a"   # 0 = use charger max (default)
 VEHICLE_SOC_ENTITY = "soc_entity"
+VEHICLE_PLUG_ENTITY = "plug_entity"       # Feature 10: optional binary_sensor, state "on" = this vehicle is plugged in; "" = none
 
 SELECT_ACTIVE_VEHICLE = "active_vehicle"
 
@@ -123,6 +124,19 @@ SELECT_ACTIVE_VEHICLE = "active_vehicle"
 CONF_AUTO_VEHICLE_DETECTION = "auto_vehicle_detection"
 AUTO_DETECT_SOC_TOLERANCE = 5.0   # % – OCPP SOC måste vara inom ±5% av entitetsvärde
 SWITCH_AUTO_VEHICLE = "auto_vehicle_detection"
+
+# Feature 10: identify the connected vehicle via a per-vehicle "plugged in" sensor
+CONF_PLUG_WAIT_SECONDS = "plug_wait_seconds"   # how long to wait for a sensor to turn on (options flow, stored in entry.data)
+DEFAULT_PLUG_WAIT_SECONDS = 60                 # allowed 0–600; 0 = don't wait
+PLUG_STATE_ON = "on"                           # binary_sensor states that count as usable
+PLUG_STATE_OFF = "off"
+PLUG_OUTCOME_NO_SENSORS = "no_sensors"         # PlugDetection.outcome values
+PLUG_OUTCOME_MATCHED = "matched"
+PLUG_OUTCOME_WAIT = "wait"
+PLUG_OUTCOME_NOTIFY = "notify"
+PLUG_REASON_MULTIPLE = "multiple_plugged"      # PlugDetection.reason_code values (also picks the notification text)
+PLUG_REASON_NONE = "none_plugged"
+PLUG_REASON_PARTIAL = "partial_sensors"
 
 # "Ad hoc" vehicle (nameless, capacity-only)
 ADHOC_VEHICLE_NAME = "New Vehicle"
@@ -225,6 +239,7 @@ NOTIFY_ACTION_DISMISS        = "ocpp_dismiss_day_charging"
 NOTIFY_ACTION_SELECT_VEHICLE = "ocpp_select_vehicle_"  # prefix; append vehicle index
 NOTIFY_ACTION_KEEP_TODAY     = "ocpp_keep_today_plan"      # Bug 40
 NOTIFY_ACTION_WAIT_TOMORROW  = "ocpp_wait_tomorrow_plan"   # Bug 40
+NOTIFY_TAG_VEHICLE_SELECT    = "ocpp_vehicle_select"       # Feature 10: own tag so it can be replaced/cleared separately
 
 # Cumulative cost sensor
 SENSOR_TOTAL_COST = "total_charging_cost"

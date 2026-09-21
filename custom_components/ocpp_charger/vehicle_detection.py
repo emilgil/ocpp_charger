@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -9,8 +10,18 @@ if TYPE_CHECKING:
 
 from .const import (
     AUTO_DETECT_SOC_TOLERANCE,
+    PLUG_OUTCOME_MATCHED,
+    PLUG_OUTCOME_NO_SENSORS,
+    PLUG_OUTCOME_NOTIFY,
+    PLUG_OUTCOME_WAIT,
+    PLUG_REASON_MULTIPLE,
+    PLUG_REASON_NONE,
+    PLUG_REASON_PARTIAL,
+    PLUG_STATE_OFF,
+    PLUG_STATE_ON,
     VEHICLE_CAPACITY,
     VEHICLE_NAME,
+    VEHICLE_PLUG_ENTITY,
     VEHICLE_SOC_ENTITY,
 )
 
@@ -101,3 +112,80 @@ def identify_vehicle(
         "[VehicleDetect] No SOC data – defaulting to first vehicle: %s", v[VEHICLE_NAME]
     )
     return v, f"No SOC data – default vehicle: {v[VEHICLE_NAME]}"
+
+
+@dataclass(frozen=True)
+class PlugDetection:
+    """Result of identify_by_plug_sensor (Feature 10)."""
+
+    outcome: str                    # PLUG_OUTCOME_*
+    vehicle: dict | None = None     # the matching vehicle dict (same object as in the list) for "matched"
+    reason: str = ""                # human-readable, for _last_detection_reason
+    reason_code: str | None = None  # PLUG_REASON_* for "notify" and "wait"
+
+
+def identify_by_plug_sensor(vehicles: list[dict], hass: "HomeAssistant") -> PlugDetection:
+    """
+    Feature 10: decide which vehicle is plugged in from each vehicle's optional "plugged in" sensor.
+
+    A sensor is usable when its state is "on" or "off"; unavailable/unknown/empty or a missing entity means the
+    vehicle isn't covered. P = vehicles whose usable sensor shows "on".
+
+      no vehicle has a sensor configured    → no_sensors  (caller keeps the SoC logic)
+      |P| = 1 and every vehicle covered     → matched
+      |P| = 1 and some vehicle not covered  → notify / partial_sensors
+      |P| >= 2                              → notify / multiple_plugged
+      |P| = 0                               → wait   / none_plugged  (the caller decides how long to wait)
+
+    Pure: no timers, no notifications, no state. identify_vehicle() (SoC) is untouched.
+    """
+    if not any(v.get(VEHICLE_PLUG_ENTITY, "") for v in vehicles):
+        return PlugDetection(PLUG_OUTCOME_NO_SENSORS, reason="No plug sensor configured")
+
+    plugged: list[dict] = []
+    usable = 0
+    readings: list[str] = []
+    for v in vehicles:
+        name = v.get(VEHICLE_NAME, "?")
+        entity_id = v.get(VEHICLE_PLUG_ENTITY, "")
+        if not entity_id:
+            readings.append(f"{name}=(no sensor)")
+            continue
+        state = hass.states.get(entity_id)
+        raw = state.state if state is not None else None
+        readings.append(f"{name}={entity_id}:{raw!r}")
+        if raw in (PLUG_STATE_ON, PLUG_STATE_OFF):
+            usable += 1
+            if raw == PLUG_STATE_ON:
+                plugged.append(v)
+    all_covered = usable == len(vehicles)
+    _LOGGER.info("[VehicleDetect] Plug sensors: %s", ", ".join(readings))
+
+    if len(plugged) >= 2:
+        names = ", ".join(v.get(VEHICLE_NAME, "?") for v in plugged)
+        result = PlugDetection(
+            PLUG_OUTCOME_NOTIFY,
+            reason=f"Several vehicles show plugged in: {names}",
+            reason_code=PLUG_REASON_MULTIPLE,
+        )
+    elif len(plugged) == 1 and all_covered:
+        v = plugged[0]
+        result = PlugDetection(
+            PLUG_OUTCOME_MATCHED,
+            vehicle=v,
+            reason=f"Plug sensor {v[VEHICLE_PLUG_ENTITY]} shows {v.get(VEHICLE_NAME, '?')} plugged in",
+        )
+    elif len(plugged) == 1:
+        result = PlugDetection(
+            PLUG_OUTCOME_NOTIFY,
+            reason="Plug sensors don't cover every vehicle",
+            reason_code=PLUG_REASON_PARTIAL,
+        )
+    else:
+        result = PlugDetection(
+            PLUG_OUTCOME_WAIT,
+            reason="No plug sensor shows plugged in",
+            reason_code=PLUG_REASON_NONE,
+        )
+    _LOGGER.info("[VehicleDetect] Plug decision: %s – %s", result.outcome, result.reason)
+    return result
