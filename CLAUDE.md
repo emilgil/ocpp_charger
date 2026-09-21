@@ -56,6 +56,7 @@ custom_components/ocpp_charger/
   deadline.py          – Feature 4/6: parse_hhmm + compute_deadline + helper_state_to_hhmm (stdlib-only, testbar)
   soc_estimate.py      – Bug 29: estimate_soc från start-SOC + levererad energi; golvar mot färsk rapporterad SoC (Bug 38) (stdlib-only, testbar)
   charging_start.py    – Bug 43: serialize_charging_start/restore_charging_start – persisterar _charging_started_at över omstart (stdlib-only, testbar; tester i tests/test_bug43.py)
+  cable_flag.py        – Bug 44: restore_cable_was_available – återställer `_cable_was_available` ur Store efter omstart (stdlib-only, testbar; tester i tests/test_bug44.py)
   clear_profile.py     – Feature 8: opt_int/parse_confirm/parse_clear_request/refused_result – vakt och tolkning av clear_charging_profile-indata (stdlib-only, testbar; tester i tests/test_feature8.py)
   logging_setup.py     – Feature 9: loggkonfiguration – HaForwardHandler (WARNING+ till HA-loggen), dygnsroterande fil (14 dygn), valfri syslog UDP; apply_logging/remove_logging (stdlib-only, testbar; tester i tests/test_logging_setup.py, kopplingen i tests/test_feature9_wiring.py)
   price_cap.py         – Feature 5: select_price_cap_slots – slots ≤ pristak (stdlib-only, testbar)
@@ -171,6 +172,41 @@ till omstartstiden) och skickade om "Laddning startad"-pushen. Nu persisteras de
   → beter sig som förut; deploya helst när ingen laddning pågår. Med `notify_on_start` avstängt sätts
   `_charging_started_at` aldrig (Bug 34-beteende, oförändrat).
 
+### Omstartsvägen: Bug 44 + 45 + 46
+Incidenten 21/9 (Session Energy nollställdes inte, stod kvar på förra kabelsessionens 51,25 kWh) var tre lager på samma väg – omstart/omladdning
+av integrationen. De hänger ihop och ska förstås tillsammans:
+1. **Bug 45 (status okänd):** Garo återansluter 22–31 s efter serverstart och skickar inte om sin status. `connector_status` förblev `Unknown`
+   i över ett dygn, så ingen `Available` observerades.
+2. **Bug 44 (flaggan glömd):** `_cable_was_available` armeras bara av en äkta `Available` och låg bara i minnet → `False` efter varje omladdning →
+   riktig inkoppling klassades som Garo-reset, kabelsessionens ackumulatorer nollställdes aldrig.
+3. **Bug 46 (falskt fordonsbyte):** en färsk koordinator startar på `vehicles[0]`; `_load_state()` återställde sparat fordon via `set_active_vehicle()` →
+   "byte" vid varje omstart → Bug 41-flaggan armerad → den felklassade `Preparing` nollade `_session_total_kwh`.
+
+- **Bug 44:** `_save_state()` skriver `cable_was_available`; `_load_state()` återställer via `restore_cable_was_available(saved, cable_connected=, current=)`
+  **efter** att `cable_connected` lästs in. Sparad bool gäller; gammal Store utan nyckeln → `not cable_connected`; en redan satt live-flagga (`current`)
+  skrivs inte över. Kan **inte** härledas ur `cable_connected`: den är False även för Faulted/Unavailable med kabeln i (`ocpp_client.py`).
+- **Bug 45 Del 1:** `_request_status_refresh(reason)` skickar TriggerMessage(StatusNotification) vid **varje** (åter)anslutning efter att Store lästs: kantdetektor
+  (`_charger_was_connected`, `_state_loaded`) i `_on_charger_state_update_async()` + startup-timern `_delayed_soc_refresh` (+10 s, för en laddare som redan är
+  ansluten). Före Store-laddningen skickas ingen (`_load_state()` skulle skriva över en färsk status). Retry max `STATUS_TRIGGER_MAX_ATTEMPTS` (3) med
+  `STATUS_TRIGGER_RETRY_SECONDS` (10) emellan, så länge status är `Unknown`/`""` och laddaren ansluten. `_state_loaded` sätts i `finally` runt `_load_state()`.
+- **Bug 45 Del 2:** i Garo-reset-grenen (`Preparing`, ingen föregående `Available`) hoppas ackumuleringen av `state.energy_kwh` över när
+  `_last_connector_status_notify` är `""`/`"Unknown"`: trigger-svaret är första kända status, ingen statusändring har skett, och energin är redan
+  inräknad i den återställda `_session_total_kwh` (Bug 30). `elif` ligger **efter** Bug 41-grenen, så Del 2 **förutsätter Bug 46**.
+- **Bug 45 Del 3:** `_handle_charger()` (`ocpp_client.py`) städar i `finally` bara om `self._ws is websocket`; annars loggas `Gammal anslutning stängd, nyare aktiv`
+  och state rörs inte. Från kodgranskning, aldrig observerad i loggarna.
+- **Bug 46:** `set_active_vehicle(vehicle, *, restore=False)`. `_load_state()` anropar med `restore=True` (hoppar över bytesblocket: `_session_total_kwh`-nollning och
+  `_vehicle_switch_pending_reset`); loggar `[Bug46] Återställer fordon`. Riktiga byten (notisval, auto-detect, select) är oförändrade – Bug 41 gäller kvar.
+- **Samspel:** Bug 44 är skyddsnätet när Garo aldrig svarar på triggern; trigger-svarets `Available` ger ingen falsk stopp-push (Bug 12-vakten i
+  `_send_stop_notification` avbryter när kabeln är ur).
+- **Tester** (`tests/coordinator_harness.py` = riktig `OCPPCoordinator` med riktig `__init__`, MagicMock-hass; bara Store, hass-tjänster och tid fejkade; körs med
+  rot-venv `/mnt/c/temp/github/claude/venv/bin/python`, hoppas över utan HA): `test_bug44.py`, `test_bug45.py`, `test_bug46.py` och `test_restart_path.py`
+  (end-to-end: sent ansluten laddare, laddare som aldrig svarar, omstart mitt i en pausad session).
+- **Live-verifierat 2026-09-21:** migreringen (`[Bug44] Återställde cable_was_available=False (cable_connected=True)`), `[Bug46]` utan `[Vehicle] Switching`, och
+  `[Bug45] TriggerMessage försök 1/3 (orsak=återanslutning)` → `Accepted` → `Preparing` → `[Bug45] Preparing är första kända status efter omstart`.
+- **Kända begränsningar / ej live-verifierat:** Bug 44:s huvudfall (kabel ur → omladdning → inkoppling ska nollställa Session Energy); omstart **mitt i
+  laddning** (trigger-svaret `Charging` förlitar sig på Bug 43 mot dubbel start-push); Bug 45 Del 3. Är HA nere både när kabeln dras ur och när den kopplas
+  in igen är den sparade flaggan False och inkopplingen klassas fortfarande som Garo-reset (kvarvarande begränsning, Bug 44).
+
 ## Nyckelkonstanter (const.py)
 ```python
 DEFAULT_CHARGE_DEADLINE_HOUR        = 6      # Laddning klar senast 06:00
@@ -182,6 +218,8 @@ DEFAULT_SCHEDULE_NIGHT_START        = "22:00"
 DEFAULT_SCHEDULE_DAY_CURRENT        = 6      # A
 DEFAULT_SCHEDULE_NIGHT_CURRENT      = 16     # A
 SCAN_INTERVAL_SECONDS               = 10
+STATUS_TRIGGER_MAX_ATTEMPTS         = 3      # Bug 45: TriggerMessage-försök per (åter)anslutning
+STATUS_TRIGGER_RETRY_SECONDS        = 10     # Bug 45: avstånd mellan försöken
 SMART_CHARGE_PRICE_THRESHOLD_PERCENTILE = 0.4  # fallback-tröskel
 ```
 
@@ -194,7 +232,7 @@ SMART_CHARGE_PRICE_THRESHOLD_PERCENTILE = 0.4  # fallback-tröskel
 |----------|-----------|
 | Strömgräns via `ChangeConfiguration key=GaroOwnerMaxCurrent` | Fungerar. ChargePointMaxProfile och TxProfile Rejected. |
 | Autostart vid inkoppling utan RemoteStartTransaction | Garo startar automatiskt – HA behöver inte skicka RemoteStart |
-| Skickar INTE om StartTransaction/StatusNotification vid reconnect | `transaction_id` läses från MeterValues-payload. `TriggerMessage StatusNotification` skickas 10s efter HA-start |
+| Skickar INTE om StartTransaction/StatusNotification vid reconnect | `transaction_id` läses från MeterValues-payload. `TriggerMessage StatusNotification` skickas vid varje (åter)anslutning efter att Store lästs (Bug 45; Garo återansluter 22–31 s efter serverstart, alltså oftast efter +10 s-timern) |
 | Per-fas ström (L1/L2/L3), inget totalt faslöst värde | `current_a = mean(L1, L2, L3)` |
 | Laddprofil begränsade transaktionerna till 13 A (`ChargePointMaxProfile`, hittad och rensad 2026-09-19) | Syntes som `limit: 13` i `get_composite_schedule` under en transaktion och `Current.Offered` Outlet = 13 A (Body 16 A); utan transaktion visade boxen 16 A. Rensad med `clear_charging_profile purpose: ChargePointMaxProfile`. Ursprunget är okänt (integrationens fallback loggade ingen användning 14–19 sep). Kommer 13 A tillbaka: sök `ChargePointMaxProfile applied` / `SetChargingProfile` i debugloggen |
 
@@ -233,8 +271,10 @@ _cable_session_stop_notified: bool        # en stopp-notis per kabelsession
 _cable_session_notified_connect: bool     # Fix 9: en inkopplad-notis per kabelsession
 _session_total_kwh: float                 # Fix 7: ackumulerad energi sedan kabel in
 _suspended_ev_since: datetime | None      # SuspendedEV-detektion
-_cable_was_available: bool                # Bug 13A/38: armeras ENDAST av äkta Available; init False (Bug 38) så omstart mitt i kabelsession inte fyrar falsk genuin-inkoppling vid nästa Preparing
+_cable_was_available: bool                # Bug 13A/38: armeras ENDAST av äkta Available; init False (Bug 38) så omstart mitt i kabelsession inte fyrar falsk genuin-inkoppling vid nästa Preparing; Bug 44: persisteras i Store och återställs i _load_state()
 _cable_connect_time: datetime | None      # Fix 10: tid för kabelinkoppling
+_state_loaded: bool                       # Bug 45: _load_state() klar (sätts i finally i _delayed_soc_refresh); före det skickas ingen TriggerMessage vid anslutning
+_charger_was_connected: bool              # Bug 45: kantdetektor för laddarens WebSocket-anslutning (False→True → _request_status_refresh)
 _soc_reread_done: bool                    # Fix 10: SOC omläst inom 30 min
 _charging_started_at: datetime | None     # Bug 34: fryst faktisk laddstartstid för PlannedChargeStartSensor (None innan start/efter urkoppling); Bug 43: persisteras i Store och återställs vid omstart
 _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
@@ -473,7 +513,7 @@ behovet med ≤1 slot.
 `price_cap_ore_kwh` (Feature 5),
 `allow_day_charging`/`day_charging_manual_override` (Bug 26),
 `session_start_soc`/`session_total_kwh` (Bug 30)
-och `charging_started_at` (Bug 43) mellan omstarter.
+`charging_started_at` (Bug 43) och `cable_was_available` (Bug 44) mellan omstarter.
 - `_save_state()` anropas i varje `_async_update_data()`-cykel
 - `_load_state()` anropas i `_delayed_soc_refresh()` (10s efter HA-start)
 - **Bug 30:** `session_start_soc`/`session_total_kwh` återställs **efter** `set_active_vehicle()`
@@ -482,6 +522,8 @@ och `charging_started_at` (Bug 43) mellan omstarter.
   laddningen stoppar för tidigt ("Mål nått" vid fel SOC).
 - **Bug 43:** `charging_started_at` återställs däremot **före** `set_active_vehicle()` i `_load_state()`, så att även
   den plan som körs mitt i återställningen får rätt vänsterkant (se "Laddstartstid över omstart (Bug 43)").
+- **Bug 44:** `cable_was_available` återställs efter att `cable_connected` lästs in (migrering för en Store utan nyckeln: `not cable_connected`).
+  **Bug 46:** sparat fordon återställs med `set_active_vehicle(match, restore=True)` – inget fordonsbyte. Se "Omstartsvägen: Bug 44 + 45 + 46".
 
 ## Loggning (Feature 9)
 `logging_setup.py` (stdlib-only) äger all loggkonfiguration. `async_setup_entry()` anropar `apply_logging()` överst (via executor)
