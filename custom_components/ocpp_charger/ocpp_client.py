@@ -570,6 +570,10 @@ class OCPPClient:
 
         Retries up to *_retries* times with a 2 s delay on transient failures.
         """
+        # Bug 47: registrera önskad gräns direkt, inte först när boxen svarat.
+        # StartTransaction-handlern läser _pending_limit_a och kan annars hinna
+        # före ett överlappande anrops svar och återapplicera en föråldrad gräns.
+        self._pending_limit_a = max_current_a
         for attempt in range(1, _retries + 2):  # attempt 1 .. _retries+1
             # Try GaroOwnerMaxCurrent first
             try:
