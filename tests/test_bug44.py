@@ -9,26 +9,17 @@ Körs:
     python3 tests/test_bug44.py
         ren logik (cable_flag.py, stdlib-only). Koordinatortesterna hoppas över (SKIP) – Home Assistant saknas.
     /mnt/c/temp/github/claude/venv/bin/python tests/test_bug44.py
-        även round-trip genom den riktiga OCPPCoordinator._save_state/_load_state (HA 2025.1.4 i rot-venv).
-
-Koordinatortesterna bygger en OCPPCoordinator utan __init__ (den startar OCPP-server, MQTT m.m.) och ger den bara
-de fält _save_state/_load_state läser. Under dem ligger bara Store-lagret fejkat (disken); nycklar och
-JSON-serialisering är riktiga.
+        även round-trip genom den riktiga OCPPCoordinator._save_state/_load_state (HA 2025.1.4 i rot-venv,
+        se tests/coordinator_harness.py).
 """
 import asyncio
-import json
 import sys
-import types
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-PKG = ROOT / "custom_components" / "ocpp_charger"
+PKG = Path(__file__).resolve().parents[1] / "custom_components" / "ocpp_charger"
 sys.path.insert(0, str(PKG))
 import cable_flag as cf  # noqa: E402
-
-
-class Skip(Exception):
-    pass
+import coordinator_harness as h  # noqa: E402
 
 
 def restore(saved, **kwargs):
@@ -80,58 +71,18 @@ def test_flag_set_by_a_live_available_is_not_downgraded_by_the_restore():
 # ── Round-trip genom riktiga OCPPCoordinator._save_state/_load_state (kräver Home Assistant) ──────────────
 
 
-class FakeStore:
-    """Diskläget under HA:s Store. JSON-rundturen speglar att Store bara klarar JSON-serialiserbart."""
-
-    def __init__(self):
-        self.data = None
-
-    async def async_save(self, data):
-        self.data = json.loads(json.dumps(data))
-
-    async def async_load(self):
-        return self.data
-
-
-def _coordinator_class():
-    sys.path.insert(0, str(ROOT))
-    try:
-        from custom_components.ocpp_charger import OCPPCoordinator
-    except ImportError as exc:
-        raise Skip(f"Home Assistant saknas ({exc}) – kör med rot-venv") from exc
-    return OCPPCoordinator
-
-
 def _coordinator(store, *, cable_was_available, cable_connected):
-    """OCPPCoordinator utan __init__, med bara de fält _save_state/_load_state rör vid."""
-    coordinator_cls = _coordinator_class()   # först: lägger repo-roten på sys.path, SKIP utan HA
-    from custom_components.ocpp_charger.ocpp_client import ChargerState
-
-    c = object.__new__(coordinator_cls)
-    c._store = store
-    c.ocpp = types.SimpleNamespace(state=ChargerState(cable_connected=cable_connected))
+    c = h.make_coordinator(store)
     c._cable_was_available = cable_was_available
+    c.ocpp.state.cable_connected = cable_connected
     c._cable_session_energy_kwh = 51.25   # sluttotalen från förra kabelsessionen i incidenten
-    c._cable_session_cost_sek = 0.0
-    c._session_start_soc = None
-    c._session_total_kwh = 0.0
-    c._session_plan_intervals = None
-    c._charging_started_at = None
-    c._last_cost_energy_kwh = 0.0
-    c._day_charging_manual_override = False
-    c.charge_mode = "Smart (price-optimised)"
-    c.price_cap_ore_kwh = 0.0
-    c.target_soc = 80.0
-    c.target_kwh = 0.0
-    c.allow_day_charging = False
-    c.active_vehicle = None
     return c
 
 
 def test_flag_survives_a_save_then_load_cycle():
     """Kärnan i Bug 44 genom den riktiga koden: koordinator A har sett Available (flagga True, kabel ur) och
     sparar; en ny koordinator B (flaggan False som efter en omladdning) laddar Store och ska få True."""
-    store = FakeStore()
+    store = h.FakeStore()
     a = _coordinator(store, cable_was_available=True, cable_connected=False)
     asyncio.run(a._save_state())
 
@@ -146,7 +97,7 @@ def test_saved_false_flag_is_written_and_read_back_even_when_cable_reads_as_out(
     Flaggan måste faktiskt skrivas till Store – annars faller återställningen tillbaka på migreringsregeln
     (kabel ur → True) och nästa Preparing efter felet tas som genuin inkoppling och raderar en pågående
     sessions ackumulatorer. Skiljer 'sparad' från 'härledd ur cable_connected', vilket True-fallet ovan inte gör."""
-    store = FakeStore()
+    store = h.FakeStore()
     a = _coordinator(store, cable_was_available=False, cable_connected=False)
     asyncio.run(a._save_state())
 
@@ -161,7 +112,7 @@ def test_old_store_without_the_key_is_migrated_from_the_saved_cable_state():
     sparades → False (Bug 38-skyddet); urdragen → True. Fångar också att återställningen läser
     cable_connected EFTER att _load_state läst in den från Store – en färsk koordinators default är False."""
     for cable_connected, expected in ((True, False), (False, True)):
-        store = FakeStore()
+        store = h.FakeStore()
         writer = _coordinator(store, cable_was_available=False, cable_connected=cable_connected)
         asyncio.run(writer._save_state())
         store.data.pop("cable_was_available", None)   # så såg Store ut före Bug 44
@@ -173,17 +124,4 @@ def test_old_store_without_the_key_is_migrated_from_the_saved_cable_state():
 
 
 if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = skipped = 0
-    for t in tests:
-        try:
-            t()
-            print(f"PASS  {t.__name__}")
-        except Skip as exc:
-            skipped += 1
-            print(f"SKIP  {t.__name__}: {exc}")
-        except Exception as exc:  # AssertionError = fel resultat, annat = kraschade
-            failed += 1
-            print(f"FAIL  {t.__name__}: {type(exc).__name__}: {exc}")
-    print(f"\n{len(tests) - failed - skipped} passed, {failed} failed, {skipped} skipped")
-    sys.exit(1 if failed else 0)
+    h.run_tests(globals())

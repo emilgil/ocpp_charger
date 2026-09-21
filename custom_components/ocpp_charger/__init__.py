@@ -738,7 +738,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             if saved_vehicle:
                 match = next((v for v in self._vehicles if v.get(VEHICLE_NAME) == saved_vehicle), None)
                 if match:
-                    self.set_active_vehicle(match)
+                    self.set_active_vehicle(match, restore=True)   # Bug 46: not a vehicle switch
                     _LOGGER.info("[Store] Återställde aktivt fordon: %s", saved_vehicle)
                 else:
                     _LOGGER.warning("[Store] Sparat fordon '%s' finns inte längre i konfigurationen", saved_vehicle)
@@ -1509,11 +1509,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
             await self.ocpp.set_charging_limit(self.max_current)
         await self.async_refresh()
 
-    def set_active_vehicle(self, vehicle: dict) -> None:
-        """Switch the active vehicle, updating capacity and SOC entity immediately."""
+    def set_active_vehicle(self, vehicle: dict, *, restore: bool = False) -> None:
+        """Switch the active vehicle, updating capacity and SOC entity immediately.
+
+        restore=True (Bug 46): _load_state() putting back the vehicle that was active before a
+        restart. A fresh coordinator always starts on vehicles[0], so that would otherwise look like
+        a switch (eNiro → Enyaq) on every restart: it zeroed _session_total_kwh and armed the Bug 41
+        flag, so the next Garo-reset Preparing zeroed the SOC estimate's energy base again.
+        """
         prev_name = self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None
         new_name = vehicle.get(VEHICLE_NAME)
-        if prev_name and prev_name != new_name:
+        if restore:
+            _LOGGER.debug("[Bug46] Återställer fordon %s utan bytesnollställning", new_name)
+        elif prev_name and prev_name != new_name:
             _LOGGER.info(
                 "[Vehicle] Switching %s → %s, resetting session_total_kwh (was %.2f kWh)",
                 prev_name, new_name, self._session_total_kwh,
