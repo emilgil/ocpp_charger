@@ -9,11 +9,16 @@ hass-tjänsterna och tid (async_call_later). Anropas något av det koordinatorn 
 """
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Komponentens varningar (t.ex. "Charger ... disconnected") är väntade i testerna: en NullHandler hindrar Pythons
+# lastResort-handler från att skriva dem mitt i PASS/FAIL-utskriften.
+logging.getLogger("custom_components").addHandler(logging.NullHandler())
 
 # Fordonsordning som i driftsatt konfiguration: eNiro först, Enyaq sparad som aktiv (Bug 46).
 VEHICLES = [
@@ -57,6 +62,7 @@ def make_coordinator(store=None, *, vehicles=VEHICLES):
     hass = MagicMock()
     hass.config.time_zone = "Europe/Stockholm"
     hass.states.get.return_value = None
+    hass.services.async_call = AsyncMock(return_value=None)   # t.ex. kia_uvo.force_update vid Available
     hass.async_create_task = lambda coro, *a, **k: asyncio.ensure_future(coro)
     entry = MagicMock()
     entry.entry_id = "test"
