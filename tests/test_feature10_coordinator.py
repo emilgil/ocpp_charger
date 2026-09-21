@@ -353,5 +353,51 @@ def test_async_stop_cancels_the_wait_window():
         assert wires.timers[0]["cancelled"] and wires.listeners[0]["unsubbed"]
 
 
+# ── användarens val ──────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_scenario9_the_users_choice_wins_and_nothing_overwrites_it():
+    with _patched() as (wires, soc):
+        states = {ENYAQ_PLUG: "on", NIRO_PLUG: "on"}
+        c = _coordinator(states)
+        _connect(c)                                       # multiple_plugged → notis, SoC-fallbacken (eNiro) aktiv
+        c.notifier.on_vehicle_selection_needed.assert_called_once()
+
+        chosen = c._vehicles[1]
+        c.set_active_vehicle(chosen)                      # det åtgärdshanteraren gör först
+        c.on_vehicle_chosen_by_user(chosen)               # …och sedan detta
+
+        assert c.active_vehicle is chosen and c._vehicle_manually_chosen is True
+        assert "Manually selected" in c._last_detection_reason and "Skoda Enyaq" in c._last_detection_reason
+        c.notifier.clear_vehicle_selection_notification.assert_called_once()
+
+        # en ny identifiering i samma kabelsession (här skulle sensorerna annars peka ut eNiro) får inte skriva över valet
+        states[ENYAQ_PLUG] = "off"
+        soc_calls = soc.calls
+        _connect(c)
+        assert c.active_vehicle is chosen and soc.calls == soc_calls
+
+
+def test_a_choice_during_the_wait_cancels_it_and_a_stale_timer_does_nothing():
+    with _patched() as (wires, soc):
+        c = _coordinator({ENYAQ_PLUG: "off", NIRO_PLUG: "off"})
+        _connect(c)
+
+        c.on_vehicle_chosen_by_user(c._vehicles[1])
+
+        assert wires.timers[0]["cancelled"] and wires.listeners[0]["unsubbed"]
+        c.notifier.clear_vehicle_selection_notification.assert_not_called()   # ingen notis hade skickats
+        wires.timers[0]["action"](None)                                        # en försenad avfyrning
+        c.notifier.on_vehicle_selection_needed.assert_not_called()
+
+
+def test_the_select_vehicle_action_calls_on_vehicle_chosen_by_user():
+    """Closuren i async_setup_entry går inte att bygga utan en hel hass: kontrollera kopplingen i källkoden."""
+    src = (ROOT / "custom_components" / "ocpp_charger" / "__init__.py").read_text(encoding="utf-8")
+    start = src.index("elif action.startswith(NOTIFY_ACTION_SELECT_VEHICLE):")
+    branch = src[start:src.index("entry.async_on_unload(", start)]
+    assert "coordinator.on_vehicle_chosen_by_user(vehicle)" in branch
+    assert branch.index("coordinator.set_active_vehicle(vehicle)") < branch.index("coordinator.on_vehicle_chosen_by_user(vehicle)")
+
+
 if __name__ == "__main__":
     h.run_tests(globals())

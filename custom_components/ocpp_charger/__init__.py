@@ -227,6 +227,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.info("[Notify] User selected vehicle: %s", vehicle.get(VEHICLE_NAME, idx))
                     coordinator.set_active_vehicle(vehicle)
                     coordinator._update_charge_plan()
+                    coordinator.on_vehicle_chosen_by_user(vehicle)  # Feature 10
                     coordinator.async_set_updated_data(coordinator.ocpp.state)
             except ValueError:
                 _LOGGER.warning("[Notify] Invalid vehicle index in action: %s", action)
@@ -1005,6 +1006,15 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.notifier.clear_vehicle_selection_notification()
         self._selection_notified = False
         self._vehicle_manually_chosen = False
+
+    def on_vehicle_chosen_by_user(self, vehicle: dict) -> None:
+        """The user picked a vehicle in a notification (Feature 10). The choice stands for the rest of the cable session:
+        the wait window ends and no automation overwrites it until the cable is pulled (see _reset_vehicle_selection)."""
+        self._cancel_plug_wait()
+        self._vehicle_manually_chosen = True
+        self._last_detection_reason = f"Manually selected: {vehicle.get(VEHICLE_NAME, '?')}"
+        if self._selection_notified:
+            self.notifier.clear_vehicle_selection_notification()
 
     def _update_soc_from_ha(self) -> None:
         """Update SOC using a three-level priority chain.
