@@ -573,6 +573,8 @@ class OCPPClient:
         # Bug 47: registrera önskad gräns direkt, inte först när boxen svarat.
         # StartTransaction-handlern läser _pending_limit_a och kan annars hinna
         # före ett överlappande anrops svar och återapplicera en föråldrad gräns.
+        # Skrivs medvetet inte om vid svar: ett sent svar på en äldre begäran skulle
+        # annars skriva tillbaka det gamla värdet över en nyare begäran.
         self._pending_limit_a = max_current_a
         for attempt in range(1, _retries + 2):  # attempt 1 .. _retries+1
             # Try GaroOwnerMaxCurrent first
@@ -588,11 +590,9 @@ class OCPPClient:
                 )
                 if status == "Accepted":
                     self.state.active_limit_a = max_current_a
-                    self._pending_limit_a = max_current_a
                     return True
                 if status == "RebootRequired":
                     self.state.active_limit_a = max_current_a
-                    self._pending_limit_a = max_current_a
                     _LOGGER.warning("[OCPP] Charger requires reboot for GaroOwnerMaxCurrent change")
                     return True
                 # "Rejected" or "NotSupported" → fall through to profile fallback
@@ -613,7 +613,6 @@ class OCPPClient:
         ok = await self._apply_charge_point_max_profile(max_current_a)
         if ok:
             self.state.active_limit_a = max_current_a
-            self._pending_limit_a = max_current_a
         return ok
 
     async def trigger_status_notification(self) -> None:

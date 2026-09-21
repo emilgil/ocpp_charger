@@ -139,5 +139,27 @@ def test_start_transaction_reapplies_the_latest_requested_limit():
     assert sent == [11, 16, 16], sent   # sista skickade värdet är det boxen behåller
 
 
+def test_a_late_reply_to_an_older_request_does_not_overwrite_a_newer_one():
+    """Spegelbilden: 11 A begärt, 16 A begärt, och först DÅ kommer svaret på 11 A. Det svaret får inte skriva tillbaka 11 som
+    'senaste gräns' – en StartTransaction i det fönstret skulle återapplicera 11 A."""
+
+    async def scenario():
+        client, box = _client_with_box()
+        older = asyncio.ensure_future(client.set_charging_limit(11.0))
+        await _tick()
+        newer = asyncio.ensure_future(client.set_charging_limit(16.0))
+        await _tick()
+        box.reply(0)
+        await older                     # svaret på den äldre begäran kommer efter att den nyare registrerats
+        in_the_window = client._pending_limit_a
+        box.reply(1)
+        await newer
+        return in_the_window, client._pending_limit_a
+
+    in_the_window, after = asyncio.run(scenario())
+    assert in_the_window == 16.0
+    assert after == 16.0
+
+
 if __name__ == "__main__":
     h.run_tests(globals())
