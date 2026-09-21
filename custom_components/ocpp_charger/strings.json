@@ -21,7 +21,11 @@
           "name": "Vehicle name",
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
+          "plug_entity": "Vehicle plugged-in sensor (binary_sensor) – optional",
           "add_another": "What would you like to do next?"
+        },
+        "data_description": {
+          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor."
         }
       },
       "schedule": {
@@ -52,7 +56,8 @@
       "cannot_connect": "Could not connect to the charger",
       "invalid_host": "Invalid IP address",
       "vehicle_name_required": "Vehicle name is required",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "plug_entity_invalid": "The plugged-in sensor must be a binary_sensor entity (binary_sensor.…)"
     },
     "abort": {
       "already_configured": "This charger is already configured"
@@ -73,7 +78,11 @@
           "name": "Vehicle name",
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
+          "plug_entity": "Vehicle plugged-in sensor (binary_sensor) – optional",
           "soc_unit": "SOC entity unit (percent or kwh)"
+        },
+        "data_description": {
+          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor."
         }
       },
       "edit_vehicle": {
@@ -82,7 +91,11 @@
           "name": "Vehicle name",
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
+          "plug_entity": "Vehicle plugged-in sensor (binary_sensor) – optional",
           "soc_unit": "SOC entity unit (percent or kwh)"
+        },
+        "data_description": {
+          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor."
         }
       },
       "remove_vehicle": {
@@ -148,11 +161,19 @@
           "syslog_port": "Syslog UDP port",
           "syslog_level": "Minimum level sent to syslog"
         }
+      },
+      "edit_detection": {
+        "title": "Vehicle Detection Settings",
+        "description": "When a cable is connected and no vehicle's plugged-in sensor shows 'on' yet, wait this long for a sensor to turn on before asking which vehicle is charging.",
+        "data": {
+          "plug_wait_seconds": "Wait for plugged-in sensor (seconds, 0 = don't wait)"
+        }
       }
     },
     "error": {
       "rest_username_required": "Username is required for Basic auth",
-      "rest_token_required": "Bearer token is required for Bearer auth"
+      "rest_token_required": "Bearer token is required for Bearer auth",
+      "plug_entity_invalid": "The plugged-in sensor must be a binary_sensor entity (binary_sensor.…)"
     }
   }
 }
