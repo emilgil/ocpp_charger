@@ -78,6 +78,7 @@ from .const import (
     PLUG_OUTCOME_WAIT,
     PLUG_REASON_NONE,
     VEHICLE_PLUG_ENTITY,
+    VEHICLE_WAKE_ACTION,
     PLANNER_ALGO_GREEDY,
     PLANNER_ALGO_CONTIGUOUS,
     SELECT_PLANNER_ALGORITHM,
@@ -935,8 +936,41 @@ class OCPPCoordinator(DataUpdateCoordinator):
         except (TypeError, ValueError):
             return DEFAULT_PLUG_WAIT_SECONDS
 
+    def _wake_vehicles(self, vehicles: list[dict]) -> None:
+        """Feature 10c: fire each vehicle's optional wake_action once, when a plug-sensor wait starts.
+
+        Vehicle-agnostic – this method knows nothing about Kia or Skoda specifically, only the two action
+        shapes: "button.<entity>" is pressed via button.press; anything else is called as "<domain>.<service>"
+        with no target entity (e.g. kia_uvo.force_update). Best effort: a missing service/entity is logged
+        and never blocks the rest of the detection flow, same pattern as the existing kia_uvo.force_update
+        call in _send_stop_notification().
+        """
+        for v in vehicles:
+            action = v.get(VEHICLE_WAKE_ACTION, "").strip()
+            if not action:
+                continue
+            name = v.get(VEHICLE_NAME, "?")
+            try:
+                if action.startswith("button."):
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(
+                            "button", "press", {"entity_id": action}, blocking=False,
+                        )
+                    )
+                else:
+                    domain, _, service = action.partition(".")
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(domain, service, {}, blocking=False)
+                    )
+                _LOGGER.info("[VehicleDetect] Väcker %s via %s", name, action)
+            except Exception:
+                _LOGGER.warning(
+                    "[VehicleDetect] Väckning av %s misslyckades (%s)", name, action, exc_info=True,
+                )
+
     def _start_plug_wait(self) -> None:
         """No vehicle shows plugged in yet: listen to the plug sensors for plug_wait_seconds, then ask."""
+        self._wake_vehicles(self._vehicles)
         seconds = self._plug_wait_seconds()
         self._cancel_plug_wait()
         if seconds <= 0:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -77,6 +78,7 @@ from .const import (
     VEHICLE_NAME,
     VEHICLE_PLUG_ENTITY,
     VEHICLE_SOC_ENTITY,
+    VEHICLE_WAKE_ACTION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,6 +129,23 @@ def _plug_entity_error(user_input: dict) -> str | None:
     return None
 
 
+# Feature 10: "button.<entity>" and "<domain>.<service>" are syntactically the same shape
+# (button.press being just one valid domain/service pair among many), so one pattern covers both.
+_WAKE_ACTION_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
+
+
+def _wake_action_error(user_input: dict) -> str | None:
+    """Feature 10: the optional wake action must look like 'button.<entity>' or '<domain>.<service>'.
+
+    Existence isn't checked here – kia_uvo.force_update may not be registered yet at
+    config time, and that would be a false red flag.
+    """
+    value = user_input.get(VEHICLE_WAKE_ACTION, "").strip()
+    if value and not _WAKE_ACTION_RE.match(value):
+        return "wake_action_invalid"
+    return None
+
+
 def _vehicle_schema(defaults: dict | None = None) -> vol.Schema:
     d = defaults or {}
     return vol.Schema({
@@ -141,6 +160,10 @@ def _vehicle_schema(defaults: dict | None = None) -> vol.Schema:
         # the saved value, so a saved plug sensor could never be removed (same lesson as syslog_host, Feature 9).
         vol.Optional(
             VEHICLE_PLUG_ENTITY, description={"suggested_value": d.get(VEHICLE_PLUG_ENTITY, "")}
+        ): str,
+        # Feature 10: same no-default= reasoning as VEHICLE_PLUG_ENTITY above.
+        vol.Optional(
+            VEHICLE_WAKE_ACTION, description={"suggested_value": d.get(VEHICLE_WAKE_ACTION, "")}
         ): str,
         vol.Optional(VEHICLE_SOC_UNIT, default=d.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT)): vol.In(SOC_UNITS),
         vol.Optional(VEHICLE_MAX_CURRENT_A, default=d.get(VEHICLE_MAX_CURRENT_A, 0)): NumberSelector(
@@ -218,12 +241,15 @@ class OCPPChargerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[VEHICLE_NAME] = "vehicle_name_required"
             elif plug_error := _plug_entity_error(user_input):
                 errors[VEHICLE_PLUG_ENTITY] = plug_error
+            elif wake_error := _wake_action_error(user_input):
+                errors[VEHICLE_WAKE_ACTION] = wake_error
             else:
                 vehicle = {
                     VEHICLE_NAME:         name,
                     VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
                     VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
                     VEHICLE_PLUG_ENTITY:  user_input.get(VEHICLE_PLUG_ENTITY, "").strip(),
+                    VEHICLE_WAKE_ACTION:  user_input.get(VEHICLE_WAKE_ACTION, "").strip(),
                     VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
                     VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 }
@@ -436,12 +462,15 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 errors[VEHICLE_NAME] = "vehicle_name_required"
             elif plug_error := _plug_entity_error(user_input):
                 errors[VEHICLE_PLUG_ENTITY] = plug_error
+            elif wake_error := _wake_action_error(user_input):
+                errors[VEHICLE_WAKE_ACTION] = wake_error
             else:
                 self._vehicles.append({
                     VEHICLE_NAME:         name,
                     VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
                     VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
                     VEHICLE_PLUG_ENTITY:  user_input.get(VEHICLE_PLUG_ENTITY, "").strip(),
+                    VEHICLE_WAKE_ACTION:  user_input.get(VEHICLE_WAKE_ACTION, "").strip(),
                     VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
                     VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 })
@@ -466,12 +495,15 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 errors[VEHICLE_NAME] = "vehicle_name_required"
             elif plug_error := _plug_entity_error(user_input):
                 errors[VEHICLE_PLUG_ENTITY] = plug_error
+            elif wake_error := _wake_action_error(user_input):
+                errors[VEHICLE_WAKE_ACTION] = wake_error
             else:
                 self._vehicles[idx] = {
                     VEHICLE_NAME:         name,
                     VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
                     VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
                     VEHICLE_PLUG_ENTITY:  user_input.get(VEHICLE_PLUG_ENTITY, "").strip(),
+                    VEHICLE_WAKE_ACTION:  user_input.get(VEHICLE_WAKE_ACTION, "").strip(),
                     VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
                     VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 }

@@ -117,6 +117,8 @@ VEHICLE_CAPACITY = "capacity_kwh"
 VEHICLE_MAX_CURRENT_A = "max_current_a"   # 0 = use charger max (default)
 VEHICLE_SOC_ENTITY = "soc_entity"
 VEHICLE_PLUG_ENTITY = "plug_entity"       # Feature 10: optional binary_sensor, state "on" = this vehicle is plugged in; "" = none
+VEHICLE_WAKE_ACTION = "wake_action"       # Feature 10: optional wake action, fired once when a plug-sensor wait starts.
+                                           # "button.<entity>" -> button.press; otherwise treated as "<domain>.<service>" and called directly. "" = none
 
 SELECT_ACTIVE_VEHICLE = "active_vehicle"
 
@@ -127,7 +129,7 @@ SWITCH_AUTO_VEHICLE = "auto_vehicle_detection"
 
 # Feature 10: identify the connected vehicle via a per-vehicle "plugged in" sensor
 CONF_PLUG_WAIT_SECONDS = "plug_wait_seconds"   # how long to wait for a sensor to turn on (options flow, stored in entry.data)
-DEFAULT_PLUG_WAIT_SECONDS = 60                 # allowed 0–600; 0 = don't wait
+DEFAULT_PLUG_WAIT_SECONDS = 90                 # allowed 0–600; 0 = don't wait. Raised from 60s: measured Skoda wake-up alone took ~44s
 PLUG_STATE_ON = "on"                           # binary_sensor states that count as usable
 PLUG_STATE_OFF = "off"
 PLUG_OUTCOME_NO_SENSORS = "no_sensors"         # PlugDetection.outcome values

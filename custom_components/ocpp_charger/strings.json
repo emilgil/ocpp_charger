@@ -22,10 +22,12 @@
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
           "plug_entity": "Vehicle plugged-in sensor (binary_sensor) – optional",
+          "wake_action": "Wake action – optional",
           "add_another": "What would you like to do next?"
         },
         "data_description": {
-          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor."
+          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor.",
+          "wake_action": "An optional action that wakes the vehicle's cloud service when waiting for its plugged-in sensor – either a button entity (e.g. MySkoda's button.skoda_enyaq_wake_up_car) or a service in the form domain.service (e.g. kia_uvo.force_update). Leave empty for none."
         }
       },
       "schedule": {
@@ -57,7 +59,8 @@
       "invalid_host": "Invalid IP address",
       "vehicle_name_required": "Vehicle name is required",
       "unknown": "Unexpected error",
-      "plug_entity_invalid": "The plugged-in sensor must be a binary_sensor entity (binary_sensor.…)"
+      "plug_entity_invalid": "The plugged-in sensor must be a binary_sensor entity (binary_sensor.…)",
+      "wake_action_invalid": "The wake action must be a button entity (button.…) or a service in the form domain.service"
     },
     "abort": {
       "already_configured": "This charger is already configured"
@@ -79,10 +82,12 @@
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
           "plug_entity": "Vehicle plugged-in sensor (binary_sensor) – optional",
+          "wake_action": "Wake action – optional",
           "soc_unit": "SOC entity unit (percent or kwh)"
         },
         "data_description": {
-          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor."
+          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor.",
+          "wake_action": "An optional action that wakes the vehicle's cloud service when waiting for its plugged-in sensor – either a button entity (e.g. MySkoda's button.skoda_enyaq_wake_up_car) or a service in the form domain.service (e.g. kia_uvo.force_update). Leave empty for none."
         }
       },
       "edit_vehicle": {
@@ -92,10 +97,12 @@
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
           "plug_entity": "Vehicle plugged-in sensor (binary_sensor) – optional",
+          "wake_action": "Wake action – optional",
           "soc_unit": "SOC entity unit (percent or kwh)"
         },
         "data_description": {
-          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor."
+          "plug_entity": "A binary_sensor showing that this specific vehicle is plugged in (state 'on' = plugged in). Used to identify which vehicle is connected. Leave empty if the vehicle has no such sensor.",
+          "wake_action": "An optional action that wakes the vehicle's cloud service when waiting for its plugged-in sensor – either a button entity (e.g. MySkoda's button.skoda_enyaq_wake_up_car) or a service in the form domain.service (e.g. kia_uvo.force_update). Leave empty for none."
         }
       },
       "remove_vehicle": {
@@ -173,7 +180,8 @@
     "error": {
       "rest_username_required": "Username is required for Basic auth",
       "rest_token_required": "Bearer token is required for Bearer auth",
-      "plug_entity_invalid": "The plugged-in sensor must be a binary_sensor entity (binary_sensor.…)"
+      "plug_entity_invalid": "The plugged-in sensor must be a binary_sensor entity (binary_sensor.…)",
+      "wake_action_invalid": "The wake action must be a button entity (button.…) or a service in the form domain.service"
     }
   }
 }

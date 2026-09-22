@@ -22,10 +22,12 @@
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
           "plug_entity": "Inkopplad-sensor för bilen (binary_sensor) – valfritt",
+          "wake_action": "Väckningsåtgärd – valfritt",
           "add_another": "What would you like to do next?"
         },
         "data_description": {
-          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor."
+          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor.",
+          "wake_action": "En valfri åtgärd som väcker bilens molntjänst under väntan på dess inkopplad-sensor – antingen en button-entitet (t.ex. MySkodas button.skoda_enyaq_wake_up_car) eller en tjänst i formen domän.tjänst (t.ex. kia_uvo.force_update). Lämna tomt för ingen."
         }
       },
       "schedule": {
@@ -57,7 +59,8 @@
       "invalid_host": "Invalid IP address",
       "vehicle_name_required": "Vehicle name is required",
       "unknown": "Unexpected error",
-      "plug_entity_invalid": "Inkopplad-sensorn måste vara en binary_sensor-entitet (binary_sensor.…)"
+      "plug_entity_invalid": "Inkopplad-sensorn måste vara en binary_sensor-entitet (binary_sensor.…)",
+      "wake_action_invalid": "Väckningsåtgärden måste vara en button-entitet (button.…) eller en tjänst i formen domän.tjänst"
     },
     "abort": {
       "already_configured": "This charger is already configured"
@@ -79,10 +82,12 @@
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
           "plug_entity": "Inkopplad-sensor för bilen (binary_sensor) – valfritt",
+          "wake_action": "Väckningsåtgärd – valfritt",
           "soc_unit": "SOC-enhet (procent eller kWh)"
         },
         "data_description": {
-          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor."
+          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor.",
+          "wake_action": "En valfri åtgärd som väcker bilens molntjänst under väntan på dess inkopplad-sensor – antingen en button-entitet (t.ex. MySkodas button.skoda_enyaq_wake_up_car) eller en tjänst i formen domän.tjänst (t.ex. kia_uvo.force_update). Lämna tomt för ingen."
         }
       },
       "edit_vehicle": {
@@ -92,10 +97,12 @@
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
           "plug_entity": "Inkopplad-sensor för bilen (binary_sensor) – valfritt",
+          "wake_action": "Väckningsåtgärd – valfritt",
           "soc_unit": "SOC-enhet (procent eller kWh)"
         },
         "data_description": {
-          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor."
+          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor.",
+          "wake_action": "En valfri åtgärd som väcker bilens molntjänst under väntan på dess inkopplad-sensor – antingen en button-entitet (t.ex. MySkodas button.skoda_enyaq_wake_up_car) eller en tjänst i formen domän.tjänst (t.ex. kia_uvo.force_update). Lämna tomt för ingen."
         }
       },
       "remove_vehicle": {
@@ -172,7 +179,8 @@
     "error": {
       "rest_username_required": "Username is required for Basic auth",
       "rest_token_required": "Bearer token is required for Bearer auth",
-      "plug_entity_invalid": "Inkopplad-sensorn måste vara en binary_sensor-entitet (binary_sensor.…)"
+      "plug_entity_invalid": "Inkopplad-sensorn måste vara en binary_sensor-entitet (binary_sensor.…)",
+      "wake_action_invalid": "Väckningsåtgärden måste vara en button-entitet (button.…) eller en tjänst i formen domän.tjänst"
     }
   }
 }
