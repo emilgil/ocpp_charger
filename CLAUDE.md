@@ -214,8 +214,8 @@ används inte längre; funktionen finns kvar i `smart_charge.py` men anropas int
 `OCPPClient._pending_limit_a` = **senast begärda** gräns: sätts som första sats i `set_charging_limit()` och skrivs inte om vid svar. StartTransaction-handlern
 och "StartTransaction missad"-återhämtningen återapplicerar den, så ett överlappande anrops (sena) svar får aldrig skriva tillbaka ett äldre värde. Avvisas en begäran
 ligger det önskade värdet kvar och nästa transaktionsstart försöker igen. `_apply_current_schedule()` nollställer den som förut vid schemabyte.
-Tester: `tests/test_bug47.py` (rot-venv). **Deployad 2026-09-21; kvar att live-verifiera:** manuell start med inkopplad bil ska ge `[Bug47] … 16 A`, alla
-`GaroOwnerMaxCurrent` = 16 och `Current.Offered` = 16 A (kabeln var urkopplad vid deploy). Själva racet (manuell start + auto-start i samma sekund) är bara enhetstestat.
+Tester: `tests/test_bug47.py` (rot-venv). **Live-verifierat 2026-09-22:** manuell start med inkopplad bil gav `[Bug47] … 16 A`, alla `GaroOwnerMaxCurrent` = 16,
+`Current.Offered` = 16 A. Själva racet (manuell start + auto-start i samma sekund) är fortfarande bara enhetstestat.
 
 ## Nyckelkonstanter (const.py)
 ```python
