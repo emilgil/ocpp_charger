@@ -661,11 +661,11 @@ Tjänstens/entitetens faktiska existens kontrolleras **inte** vid konfigurations
 Koordinatormetod `_wake_vehicles()`, anropad **en gång** från `_start_plug_wait()` när ett
 väntefönster startar (`|P|=0`) – även när `plug_wait_seconds=0` (bilarna väcks ändå, bara ingen
 väntan sker innan notisen). Best effort: `try/except Exception` per bil, `_LOGGER.warning` vid
-fel, stoppar aldrig resten av flödet – samma mönster som `kia_uvo.force_update`-anropet i
-`_send_stop_notification()`, som lämnas orört (annat sammanhang: laddstopp/kabel-ur). En
-bilspecifik service-existens-miss (t.ex. `ServiceNotFound`) manifesterar sig asynkront inuti
-den schemalagda tasken, inte synkront vid schemaläggningen – samma begränsning som det
-befintliga mönstret, oförändrad av Feature 10c.
+fel, stoppar aldrig resten av flödet. En bilspecifik service-existens-miss (t.ex.
+`ServiceNotFound`) manifesterar sig asynkront inuti den schemalagda tasken, inte synkront vid
+schemaläggningen – samma begränsning som det befintliga mönstret, oförändrad av Feature 10c.
+Samma metod återanvänds (med en lista på ett enda fordon) av `_wake_active_vehicle()` i
+laddstopp-flödet, se Bug 48 nedan.
 
 **Kända begränsningar:** sensorn visar "inkopplad någonstans", inte i just den här laddaren –
 en förbättring vore att kombinera med `device_tracker` (`PRESENCE_ENTITIES`). Molnsensorer kan
@@ -692,6 +692,28 @@ laddade. **Inte ännu live-verifierad**: ingen bil kunde kopplas in vid deployti
 själva väckningsanropet (`button.press`/`kia_uvo.force_update` faktiskt triggas, Skodan svarar
 snabbare än de tidigare 60 s) är obekräftat – koden är inert tills nästa riktiga väntefönster
 (`|P|=0`) uppstår vid en kabelanslutning.
+
+### Väckning vid laddstopp (Bug 48)
+Stopp-notisen ("Laddning avslutad") kunde visa en inaktuell batterinivå när det var **Skoda
+Enyaq** som just laddat klart – Kia e-Niro påverkades inte. Två ställen i `__init__.py`
+(`_check_notify_events()`s "Charging stopped"-gren, samt `_send_stop_notification()` – använd
+av både `SuspendedEV`-hanteringen och kabel-ur) hårdkodade `kia_uvo.force_update` oavsett aktiv
+bil. Eftersom tjänsten är registrerad (kia_uvo-integrationen laddad) kastade anropet inget
+undantag ens när Skodan var aktiv – det lyckades bara tyst med att väcka fel bil.
+
+Ny metod `_wake_active_vehicle()` (bredvid `_wake_vehicles()` ovan, återanvänder den med en
+lista på ett enda fordon – ingen dubblerad dispatch-logik) riktar väckningen mot
+`self.active_vehicle` via dess `wake_action`. Båda hårdkodade anropsställena ersatta. Bygger på
+Feature 10c ovan (`VEHICLE_WAKE_ACTION` måste finnas) – kunde inte implementeras separat före den.
+
+**Tester:** `tests/test_bug48.py` (8 tester, rot-venv/`coordinator_harness.py`-mönstret) –
+`_wake_active_vehicle()` mot rätt bil/inget fordon/fordon utan `wake_action`-nyckel, samt
+regressionstester på båda anropsställena (Enyaq väcks via `button.press`, Kia fortsatt via
+`kia_uvo.force_update`).
+
+**Deployad 2026-09-22 21:56** – ren omstart, inga fel, 41 entiteter laddade. **Inte ännu
+live-verifierad**: kräver ett riktigt laddstopp med Enyaq som aktiv bil för att bekräfta att
+`button.press` faktiskt triggas i stopp-flödet.
 
 ## Testinstans
 | Parameter | Värde |

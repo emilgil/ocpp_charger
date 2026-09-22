@@ -968,6 +968,18 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     "[VehicleDetect] Väckning av %s misslyckades (%s)", name, action, exc_info=True,
                 )
 
+    def _wake_active_vehicle(self) -> None:
+        """Bug 48: fire the active vehicle's wake_action, not a hardcoded kia_uvo.force_update.
+
+        Used before reading a fresh SoC for the stop notification (_check_notify_events's stop branch
+        and _send_stop_notification()). A one-vehicle list is a fine reuse of _wake_vehicles() – same
+        best-effort semantics, no vehicle-specific logic duplicated.
+        """
+        vehicle = self.active_vehicle
+        if not vehicle:
+            return
+        self._wake_vehicles([vehicle])
+
     def _start_plug_wait(self) -> None:
         """No vehicle shows plugged in yet: listen to the plug sensors for plug_wait_seconds, then ask."""
         self._wake_vehicles(self._vehicles)
@@ -2126,13 +2138,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 captured_cost = state.accumulated_cost
                 captured_elapsed = self.elapsed_seconds or 0
 
-                # Trigger car SOC sync immediately (Bug 10)
-                try:
-                    self.hass.async_create_task(
-                        self.hass.services.async_call("kia_uvo", "force_update", {}, blocking=False)
-                    )
-                except Exception:
-                    pass  # Service may not exist (e.g., Skoda Enyaq)
+                # Bug 48: wake the vehicle that actually charged, not always Kia
+                self._wake_active_vehicle()
 
                 async def _send_stop_notif(_now=None):
                     # Guard: abort if a new session has started since we scheduled this
@@ -2931,16 +2938,14 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """Send a delayed stop notification with fresh SOC (Bug 4).
 
         Used by both SuspendedEV handling (Bug 5) and cable-out (Bug 6).
-        Triggers kia_uvo.force_update first, then waits 60s for SOC to sync.
+        Triggers the active vehicle's wake_action first (Bug 48), then waits 60s for SOC to sync.
         """
         if self._cable_session_stop_notified:
             return
         self._cable_session_stop_notified = True
 
-        # Trigger vehicle cloud sync for fresh SOC
-        self.hass.async_create_task(
-            self.hass.services.async_call("kia_uvo", "force_update", {})
-        )
+        # Bug 48: wake the vehicle that actually charged, not always Kia
+        self._wake_active_vehicle()
 
         energy_kwh = self._cable_session_energy_kwh
         cost_sek = self._cable_session_cost_sek

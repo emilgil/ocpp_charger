@@ -1,5 +1,37 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-22 (natt): Bug 48 – SoC-väckningen vid laddstopp riktade sig alltid mot Kia
+
+**Symptom:** Stopp-notisen ("Laddning avslutad") kunde visa en inaktuell batterinivå när det
+var **Skoda Enyaq** som just laddat klart – Kia e-Niro påverkades inte.
+
+**Rotorsak:** två ställen i `__init__.py` (den ena i `_check_notify_events()`s
+"Charging stopped"-gren, den andra i `_send_stop_notification()`, använd av både
+`SuspendedEV`-hanteringen och kabel-ur) hårdkodade `kia_uvo.force_update` oavsett aktiv bil.
+Tjänsten är registrerad (kia_uvo-integrationen är laddad) så anropet kastade inget undantag
+ens när Skodan var aktiv bil – det lyckades bara tyst med att väcka fel bil.
+
+**Fix:** ny gemensam metod `_wake_active_vehicle()` (bredvid Feature 10c:s `_wake_vehicles()`,
+som den återanvänder med en lista på ett enda fordon – ingen dubblerad dispatch-logik) riktar
+väckningen mot `self.active_vehicle` via dess `wake_action`. Bygger på Feature 10c ovan;
+kan inte implementeras separat före den (`VEHICLE_WAKE_ACTION` måste finnas).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | Ny `_wake_active_vehicle()`; de två `kia_uvo.force_update`-anropen ersatta; docstring i `_send_stop_notification()` uppdaterad |
+
+**Tester:** ny `tests/test_bug48.py` (8 tester) – `_wake_active_vehicle()` riktar sig mot rätt
+bil/inget fordon/fordon utan `wake_action`-nyckel, samt regressionstester på båda
+anropsställena (Enyaq väcks via `button.press`, Kia fortsatt via `kia_uvo.force_update`, ingen
+regression). Full svit grön (286 tester).
+
+**Deploy 2026-09-22 21:56** (`__init__.py`; full HA-omstart, kabeln urkopplad). Rent: inga
+WARNING/ERROR/Traceback i `home-assistant.log` eller `ocpp_charger_debug.log`, alla 41
+entiteter laddade. **Inte ännu live-verifierat**: kräver ett riktigt laddstopp med Enyaq som
+aktiv bil för att bekräfta att `button.press` faktiskt triggas i stopp-flödet (Kias
+`kia_uvo.force_update`-väg är beteendemässigt oförändrad, så den delen är redan implicit
+verifierad av produktionshistoriken).
+
 ## 2026-09-22 (kväll): Feature 10c – väckning av bilen vid väntefönstret (`wake_action`)
 
 **Bakgrund:** MySkoda pollar inte – bilen sover tills något väcker den (uppmätt ~44 s
