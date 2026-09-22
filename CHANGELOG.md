@@ -43,10 +43,17 @@ lagring/rensning på alla tre ställen, strängar) och `tests/test_feature10_coo
 tester som hårdkodade standardvärdet 60 s uppdaterade till 90. Full svit: 278 gröna
 (`pytest tests/`).
 
-**Status:** implementerat + enhetstestat i isolerad worktree (`feature/feature10-wake-action`),
-**inte ännu deployat eller live-verifierat** – kräver skarp omstart och en väntesession med
-riktig kabel för att bekräfta `button.press`/`kia_uvo.force_update` faktiskt triggas och att
-Skodan svarar snabbare än innan.
+**Deploy 2026-09-22 21:40** (`const.py`, `config_flow.py`, `__init__.py`, `strings.json`,
+`translations/sv.json`; full HA-omstart, kabeln urkopplad). Rent: inga WARNING/ERROR/Traceback
+i `home-assistant.log` eller `ocpp_charger_debug.log`, Bug 44/45/46-omstartsvägen fungerade som
+vanligt (TriggerMessage → `Accepted` → `Available` bekräftad), alla 41 entiteter laddade (de 4
+som visar `unknown`/`unavailable` är laddningsspecifika sensorer – förväntat utan inkopplad kabel).
+
+**Inte ännu live-verifierat** – ingen bil tillgänglig att koppla in vid deploytillfället, så
+själva väckningsanropet (`button.press`/`kia_uvo.force_update` faktiskt triggas, Skodan svarar
+snabbare än de tidigare 60 s) är obekräftat. Koden är inert tills ett riktigt väntefönster
+(`|P|=0`) uppstår, så deployen i sig är riskfri för befintligt beteende. Nästa gång kabeln
+kopplas in utan att någon sensor genast visar inkopplad bekräftar det scenariot naturligt.
 
 ## 2026-09-22: Feature 10 – Bilidentifiering via inkopplad-sensor per bil (+ bugfix: on_cable_connected-notisens vals-knappar rensades aldrig)
 

@@ -687,10 +687,11 @@ Switched to Kia eNiro`, `Active Vehicle`-entiteten bekräftar bytet). Scenario 1
 och 12 (väntetidsändring) ännu inte observerade live. (60 s var väntetiden vid det här testet –
 höjd till 90 s av Feature 10c, se ovan.)
 
-**Feature 10c (`wake_action`) är implementerad och enhetstestad men ännu inte deployad eller
-live-verifierad** – kräver en skarp omstart och en väntesession med riktig kabel för att
-bekräfta att `button.press`/`kia_uvo.force_update` faktiskt triggas och att Skodan svarar
-snabbare än innan.
+**Feature 10c (`wake_action`) deployad 2026-09-22 21:40** – ren omstart, inga fel, 41 entiteter
+laddade. **Inte ännu live-verifierad**: ingen bil kunde kopplas in vid deploytillfället, så
+själva väckningsanropet (`button.press`/`kia_uvo.force_update` faktiskt triggas, Skodan svarar
+snabbare än de tidigare 60 s) är obekräftat – koden är inert tills nästa riktiga väntefönster
+(`|P|=0`) uppstår vid en kabelanslutning.
 
 ## Testinstans
 | Parameter | Värde |
