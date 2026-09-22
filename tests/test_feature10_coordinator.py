@@ -267,12 +267,12 @@ def test_scenario12_the_wait_time_is_read_on_every_connection():
     with _patched() as (wires, soc):
         c = _coordinator({ENYAQ_PLUG: "off", NIRO_PLUG: "off"}, wait=5)
         _connect(c)
-        c._cancel_plug_wait()
 
         c.entry.data["plug_wait_seconds"] = 90     # options-ändring, ingen omstart
         _connect(c)
 
         assert [t["delay"] for t in wires.timers] == [5, 90]
+        assert wires.timers[0]["cancelled"]        # en ny anslutning ersätter ett ännu levande fönster
 
 
 def test_the_listener_tracks_only_configured_sensors():
@@ -397,6 +397,58 @@ def test_the_select_vehicle_action_calls_on_vehicle_chosen_by_user():
     branch = src[start:src.index("entry.async_on_unload(", start)]
     assert "coordinator.on_vehicle_chosen_by_user(vehicle)" in branch
     assert branch.index("coordinator.set_active_vehicle(vehicle)") < branch.index("coordinator.on_vehicle_chosen_by_user(vehicle)")
+
+
+def test_a_tap_before_the_poll_edge_is_not_overwritten_by_identification():
+    """Samma kabelsession: 'Laddkabel inkopplad' skickas från händelsevägen vid Preparing, medan identifieringen körs på
+    den senare poll-kanten. Trycker användaren på en bil emellan ska identifieringen inte skriva över valet."""
+    with _patched() as (wires, soc):
+        c = _coordinator({ENYAQ_PLUG: "on", NIRO_PLUG: "off"})    # sensorerna pekar ut Enyaq
+        c.ocpp.state.connector_status = "Preparing"               # Preparing-händelsen har kommit, kanten inte än
+        chosen = c._vehicles[0]                                   # användaren trycker på eNiro (aktiv sedan start)
+
+        c.set_active_vehicle(chosen)
+        c.on_vehicle_chosen_by_user(chosen)
+        assert c._vehicle_manually_chosen is True
+
+        _connect(c)                                               # poll-kanten Available → Preparing
+
+        assert c.active_vehicle is chosen
+        assert soc.calls == 0
+        c.notifier.on_vehicle_selection_needed.assert_not_called()
+        assert wires.timers == [] and wires.listeners == []
+
+
+def test_a_tap_while_the_cable_is_out_does_not_suppress_the_next_identification():
+    """En kvarliggande 'Laddkabel inkopplad'-notis kan tryckas på efter urkoppling. Inget rensar flaggan före nästa
+    Preparing (inga OCPP-uppdateringar utan kabel), så att armera den skulle tysta identifieringen – även SoC-
+    fallbacken – för hela nästa session."""
+    with _patched() as (wires, soc):
+        c = _coordinator({ENYAQ_PLUG: "on", NIRO_PLUG: "off"})
+        c.ocpp.state.connector_status = "Available"               # kabeln är ur
+        stale = c._vehicles[0]
+
+        c.set_active_vehicle(stale)                               # åtgärdshanteraren gör detta först
+        c.on_vehicle_chosen_by_user(stale)
+
+        assert c._vehicle_manually_chosen is False
+        assert "Manually selected" in c._last_detection_reason    # valet loggas ändå
+
+        _connect(c)                                               # nästa inkoppling
+
+        assert c.active_vehicle["name"] == "Skoda Enyaq"          # sensorn avgör som vanligt
+        assert ENYAQ_PLUG in c._last_detection_reason
+
+
+def test_the_wait_callbacks_are_event_loop_callbacks():
+    """Utan @callback kör HA metoden i en executor-tråd och koordinatorns tillstånd rörs från fel tråd (plan Decision 5).
+    Testerna anropar callbackarna direkt, så bara detta test fångar ett borttaget dekorationsrad."""
+    _module()   # SKIP utan HA
+    from homeassistant.core import is_callback
+    with _patched():
+        c = _coordinator({})
+        assert is_callback(c._on_plug_sensor_change)
+        assert is_callback(c._on_plug_wait_timeout)
 
 
 if __name__ == "__main__":

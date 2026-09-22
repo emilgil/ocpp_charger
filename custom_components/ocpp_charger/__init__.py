@@ -938,11 +938,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
     def _start_plug_wait(self) -> None:
         """No vehicle shows plugged in yet: listen to the plug sensors for plug_wait_seconds, then ask."""
         seconds = self._plug_wait_seconds()
+        self._cancel_plug_wait()
         if seconds <= 0:
             _LOGGER.info("[VehicleDetect] Ingen bil visar inkopplad och väntetiden är 0 – frågar direkt")
             self._send_vehicle_selection(PLUG_REASON_NONE)
             return
-        self._cancel_plug_wait()
         plug_entities = [v[VEHICLE_PLUG_ENTITY] for v in self._vehicles if v.get(VEHICLE_PLUG_ENTITY, "")]
         self._plug_state_unsub = async_track_state_change_event(
             self.hass, plug_entities, self._on_plug_sensor_change,
@@ -1011,7 +1011,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """The user picked a vehicle in a notification (Feature 10). The choice stands for the rest of the cable session:
         the wait window ends and no automation overwrites it until the cable is pulled (see _reset_vehicle_selection)."""
         self._cancel_plug_wait()
-        self._vehicle_manually_chosen = True
+        # A tap while no cable is connected (a lingering "Laddkabel inkopplad" notification) has no cable session to
+        # protect. Arming the flag then would make the NEXT connection skip identification altogether: nothing clears
+        # it before that Preparing (no OCPP updates while the cable is out). The vehicle still becomes active (the
+        # action handler already did that); the next connection simply identifies again.
+        if self.ocpp.state.connector_status != "Available":
+            self._vehicle_manually_chosen = True
         self._last_detection_reason = f"Manually selected: {vehicle.get(VEHICLE_NAME, '?')}"
         if self._selection_notified:
             self.notifier.clear_vehicle_selection_notification()

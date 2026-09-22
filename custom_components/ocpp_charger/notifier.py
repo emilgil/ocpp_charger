@@ -350,8 +350,8 @@ class ChargerNotifier:
 
         if not self.enabled or not self.notify_target:
             _LOGGER.warning(
-                "[Notify] Vehicle selection needed (%s) but no notification target is configured – "
-                "keeping the SoC-based choice: %s", reason_code, active_vehicle_name or "–",
+                "[Notify] Vehicle selection needed (%s) but notifications are disabled or no notification target "
+                "is configured – keeping the SoC-based choice: %s", reason_code, active_vehicle_name or "–",
             )
             return
         try:
