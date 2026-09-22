@@ -27,8 +27,10 @@ Hela sviten: 200 passerar (baslinje 196).
 
 **Deploy 2026-09-21 22:17** (`__init__.py` + `ocpp_client.py`, full HA-omstart, kabeln urkopplad, ingen laddning). Start-kontroll OK: inga WARNING/ERROR/Traceback i
 debugloggen sedan omstarten, Bug 44/45/46-raderna som förut, `Period=Night limit=16 A`.
-**Ej live-verifierat:** manuell start med inkopplad bil – `[Bug47] Manuell start: begränsning 16 A`, alla `GaroOwnerMaxCurrent` = 16 och `Current.Offered` = 16 A återstår att
-bekräfta vid nästa inkoppling (kabeln var urkopplad vid deploy). Själva racet (manuell start + auto-start inom samma sekund) är bara enhetstestat, inte live-framkallat.
+**Live-verifierat 2026-09-22 kl 18:48** (Kia eNiro inkopplad, Start-knappen manuellt): `[Bug47] Manuell start: begränsning 16 A (mode=Smart (price-optimised))`,
+två `GaroOwnerMaxCurrent`-anrop totalt (manuell start + `StartTransaction`-handlerns återapplicering), båda `=16 A result=Accepted`, ingen `=11`.
+`MeterValues` direkt efter: `Current.Offered` Outlet/Body = 16 A. Status gick till `Charging`. Graylog (`source:ocpp_charger*`), inte lokal SSH-logg.
+**Kvarvarande begränsning:** själva racet (manuell start + auto-start inom samma sekund, som i incidenten 21/9) är bara enhetstestat, inte live-framkallat – kräver att en Smart-planfönster-start råkar sammanfalla med en manuell start.
 
 ## 2026-09-21: Bug 44 + 45 + 46 – Omstartsvägen: Session Energy nollställdes inte efter omladdning
 
