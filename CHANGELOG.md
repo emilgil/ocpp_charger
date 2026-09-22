@@ -1,5 +1,53 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-22 (kväll): Feature 10c – väckning av bilen vid väntefönstret (`wake_action`)
+
+**Bakgrund:** MySkoda pollar inte – bilen sover tills något väcker den (uppmätt ~44 s
+uppvakningstid via `button.skoda_enyaq_wake_up_car`, bekräftat i debug-loggen). Kia UVO är
+poll-baserad och har redan `kia_uvo.force_update`, som redan används på andra ställen i koden
+(laddstopp, `SuspendedEV`). Bygger på Feature 10 ovan – inget av det ändras.
+
+**Funktion:** varje fordon kan nu även få ett valfritt fält, `wake_action`
+(`VEHICLE_WAKE_ACTION` i `const.py`), som körs **en gång** när ett väntefönster (`|P|=0`)
+startar – inte upprepat under väntan. Ett gemensamt format täcker båda integrationsmönstren
+utan att koordinatorn behöver veta vilket bilmärke det gäller:
+- Börjar värdet med `button.` → `button.press` mot den entiteten.
+- Annars tolkas hela värdet som `domän.tjänst` och anropas direkt utan mål-entitet.
+
+Ny koordinatormetod `_wake_vehicles()`, anropad från `_start_plug_wait()` (även när
+`plug_wait_seconds = 0` – bilarna väcks fortfarande, bara ingen väntan sker innan notisen).
+Best effort: ett `try/except Exception` per bil, varning i loggen, stoppar aldrig resten av
+flödet – samma mönster som det befintliga `kia_uvo.force_update`-anropet i
+`_send_stop_notification()`, som lämnas orört (annat sammanhang: laddstopp/kabel-ur, inte
+bilidentifiering).
+
+Samtidigt höjt `DEFAULT_PLUG_WAIT_SECONDS` 60 → 90 s: uppvakningen av Skodan tar själv ~44 s,
+så 60 s lämnade för lite tid kvar för att sensorn skulle hinna pusha efteråt.
+
+Validering i `config_flow.py` (`_wake_action_error()`, delad av alla tre lagringsställena):
+måste matcha `^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$` (täcker både `button.<entitet>` och
+`<domän>.<tjänst>` – samma teckenklasser). Kontrollerar **inte** att tjänsten faktiskt finns
+vid konfigurationstillfället (`kia_uvo.force_update` kan saknas tills bilintegrationen laddat).
+
+| Fil | Ändring |
+|-----|---------|
+| `const.py` | +`VEHICLE_WAKE_ACTION`; `DEFAULT_PLUG_WAIT_SECONDS` 60→90 |
+| `config_flow.py` | `wake_action`-fält direkt efter `plug_entity` på alla tre lagringsställen + delad validator `_wake_action_error()` |
+| `strings.json`, `translations/sv.json` | Etikett/beskrivning för `wake_action` (×3), felet `wake_action_invalid` |
+| `__init__.py` | Ny `_wake_vehicles()`, anropad från `_start_plug_wait()` |
+
+**Tester:** utökade `tests/test_feature10_config_flow.py` (schema-placering, validering,
+lagring/rensning på alla tre ställen, strängar) och `tests/test_feature10_coordinator.py`
+(button-form, service-form, tyst fel blockerar inte väntefönstret, väcker även vid
+`plug_wait_seconds=0`, väcks inte upprepat vid sensorändring mitt i väntan); två befintliga
+tester som hårdkodade standardvärdet 60 s uppdaterade till 90. Full svit: 278 gröna
+(`pytest tests/`).
+
+**Status:** implementerat + enhetstestat i isolerad worktree (`feature/feature10-wake-action`),
+**inte ännu deployat eller live-verifierat** – kräver skarp omstart och en väntesession med
+riktig kabel för att bekräfta `button.press`/`kia_uvo.force_update` faktiskt triggas och att
+Skodan svarar snabbare än innan.
+
 ## 2026-09-22: Feature 10 – Bilidentifiering via inkopplad-sensor per bil (+ bugfix: on_cable_connected-notisens vals-knappar rensades aldrig)
 
 **Bakgrund:** Automatisk bilidentifiering (`vehicle_detection.identify_vehicle`) gissar vilken bil

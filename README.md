@@ -119,9 +119,14 @@ säkrare när två bilars batterinivåer råkar ligga nära varandra.
 
 Kan sensorerna inte avgöra saken (ingen visar inkopplad, flera visar inkopplad, eller någon bil
 saknar sensor) väntar integrationen upp till en konfigurerbar tid (**Edit vehicle detection
-settings** i integrationsalternativen, standard 60 sekunder) och frågar dig sedan i en notis
+settings** i integrationsalternativen, standard 90 sekunder) och frågar dig sedan i en notis
 vilken bil som laddar. Under tiden ligger den gamla SOC-baserade gissningen kvar som fallback,
 så laddningen väntar aldrig på ditt svar.
+
+Varje bil kan även få en valfri **väckningsåtgärd** (fältet **Wake action**) som körs en gång
+när en sådan väntan börjar – många bil-appar rapporterar inget förrän något väcker dem. Antingen
+en button-entitet (t.ex. MySkodas "Wake up car") eller en tjänst i formen `domän.tjänst` (t.ex.
+`kia_uvo.force_update`).
 
 ## Notiser
 

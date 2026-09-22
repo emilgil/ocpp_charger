@@ -172,7 +172,7 @@ def test_scenario4_a_sensor_turning_on_within_the_wait_selects_that_vehicle():
         _connect(c)
 
         assert soc.calls == 1                                    # SoC-fallbacken gäller under väntan
-        assert [t["delay"] for t in wires.timers] == [60]        # standardvärdet
+        assert [t["delay"] for t in wires.timers] == [90]        # standardvärdet
         assert sorted(wires.listeners[0]["entities"]) == sorted([ENYAQ_PLUG, NIRO_PLUG])
         c.notifier.on_vehicle_selection_needed.assert_not_called()
 
@@ -297,8 +297,8 @@ def test_the_notification_is_sent_at_most_once_per_cable_session():
 def test_bad_wait_settings_fall_back_to_the_default():
     with _patched():
         c = _coordinator({})
-        assert c._plug_wait_seconds() == 60
-        for raw, expected in ((0, 0), (30.0, 30), ("45", 45), (None, 60), ("abc", 60), (-5, 0)):
+        assert c._plug_wait_seconds() == 90
+        for raw, expected in ((0, 0), (30.0, 30), ("45", 45), (None, 90), ("abc", 90), (-5, 0)):
             c.entry.data["plug_wait_seconds"] = raw
             assert c._plug_wait_seconds() == expected, raw
 
@@ -477,6 +477,71 @@ def test_cable_out_also_dismisses_the_legacy_cable_connected_notification():
         _cable_out(c)
 
         c.notifier.dismiss_cable_connected_notification.assert_called_once()
+
+
+# ── wake_action (feature10c, scenario 5b/5c) ─────────────────────────────────────────────────────────────────────
+
+def _connect_async(c):
+    """Like _connect(), but inside a running loop so hass.async_create_task actually schedules."""
+    async def run():
+        _connect(c)
+        await asyncio.sleep(0)
+    asyncio.run(run())
+
+
+def test_wake_action_fires_button_press_and_a_bare_service_call_once_each():
+    with _patched() as (wires, soc):
+        vehicles = [
+            {**NIRO, "wake_action": "kia_uvo.force_update"},
+            {**ENYAQ, "wake_action": "button.skoda_enyaq_wake_up_car"},
+        ]
+        c = _coordinator({ENYAQ_PLUG: "off", NIRO_PLUG: "off"}, vehicles=vehicles)
+
+        _connect_async(c)
+
+        calls = [call.args for call in c.hass.services.async_call.call_args_list]
+        assert ("kia_uvo", "force_update", {}) in calls
+        assert ("button", "press", {"entity_id": "button.skoda_enyaq_wake_up_car"}) in calls
+        assert c.hass.services.async_call.call_count == 2
+
+        # a sensor change mid-wait re-runs the decision table but must not fire the wake actions again
+        wires.listeners[0]["action"](MagicMock())
+        assert c.hass.services.async_call.call_count == 2
+
+
+def test_wake_action_is_skipped_when_not_configured():
+    with _patched() as (wires, soc):
+        c = _coordinator({ENYAQ_PLUG: "off", NIRO_PLUG: "off"})   # VEHICLES fixture has no wake_action
+
+        _connect_async(c)
+
+        c.hass.services.async_call.assert_not_called()
+
+
+def test_a_failing_wake_action_does_not_block_the_other_vehicle_or_the_wait():
+    with _patched() as (wires, soc):
+        vehicles = [
+            {**NIRO, "wake_action": "kia_uvo.force_update"},
+            {**ENYAQ, "wake_action": "button.skoda_enyaq_wake_up_car"},
+        ]
+        c = _coordinator({ENYAQ_PLUG: "off", NIRO_PLUG: "off"}, vehicles=vehicles)
+        c.hass.services.async_call.side_effect = Exception("boom")
+
+        _connect_async(c)
+
+        assert c.hass.services.async_call.call_count == 2   # both attempted despite the first raising
+        assert len(wires.timers) == 1 and len(wires.listeners) == 1   # the wait itself still started
+
+
+def test_wake_action_also_fires_when_the_wait_time_is_zero():
+    with _patched() as (wires, soc):
+        vehicles = [{**NIRO, "wake_action": "kia_uvo.force_update"}, ENYAQ]
+        c = _coordinator({ENYAQ_PLUG: "off", NIRO_PLUG: "off"}, vehicles=vehicles, wait=0)
+
+        _connect_async(c)
+
+        c.hass.services.async_call.assert_called_once_with("kia_uvo", "force_update", {}, blocking=False)
+        c.notifier.on_vehicle_selection_needed.assert_called_once_with("none_plugged", c._vehicles, "Kia eNiro")
 
 
 if __name__ == "__main__":

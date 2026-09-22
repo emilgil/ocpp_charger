@@ -1,4 +1,4 @@
-"""Feature 10 – config flow: plug_entity per bil (tre ställen), validering och väntetidssteget, plus UI-strängarna.
+"""Feature 10 – config flow: plug_entity/wake_action per bil (tre ställen), validering och väntetidssteget, plus UI-strängarna.
 
 Flödesstegen körs på riktiga HA-klasser (rot-venv) mot en MagicMock-hass; strängtesterna läser bara JSON och körs även
 utan Home Assistant.
@@ -68,6 +68,37 @@ def test_plug_field_has_no_default_so_an_emptied_field_can_be_saved():
     assert "plug_entity" not in schema({"name": "A", "capacity_kwh": 64.0})
 
 
+# ── wake_action (feature10c) ────────────────────────────────────────────────────────────────────────────────────
+
+def test_wake_action_error_rules():
+    cf = _cf()
+    assert cf._wake_action_error({}) is None
+    assert cf._wake_action_error({"wake_action": ""}) is None
+    assert cf._wake_action_error({"wake_action": "   "}) is None
+    assert cf._wake_action_error({"wake_action": " button.skoda_enyaq_wake_up_car "}) is None
+    assert cf._wake_action_error({"wake_action": "kia_uvo.force_update"}) is None
+    assert cf._wake_action_error({"wake_action": "no_dot_at_all"}) == "wake_action_invalid"
+    assert cf._wake_action_error({"wake_action": "domain."}) == "wake_action_invalid"
+    assert cf._wake_action_error({"wake_action": ".service"}) == "wake_action_invalid"
+    assert cf._wake_action_error({"wake_action": "a.b.c"}) == "wake_action_invalid"
+    assert cf._wake_action_error({"wake_action": "Domain.Service"}) == "wake_action_invalid"
+    assert cf._wake_action_error({"wake_action": "domain.ser vice"}) == "wake_action_invalid"
+
+
+def test_schema_puts_the_wake_field_right_after_the_plug_entity():
+    cf = _cf()
+    keys = [str(k) for k in cf._vehicle_schema().schema]
+    assert keys.index("wake_action") == keys.index("plug_entity") + 1
+
+
+def test_wake_field_has_no_default_so_an_emptied_field_can_be_saved():
+    cf = _cf()
+    schema = cf._vehicle_schema({**OLD, "wake_action": "kia_uvo.force_update"})
+    marker = next(k for k in schema.schema if str(k) == "wake_action")
+    assert marker.description == {"suggested_value": "kia_uvo.force_update"}
+    assert "wake_action" not in schema({"name": "A", "capacity_kwh": 64.0})
+
+
 # ── de tre lagringsställena ──────────────────────────────────────────────────────────────────────────────────────
 
 def test_options_add_stores_a_stripped_plug_entity_and_an_empty_string_when_omitted():
@@ -127,6 +158,62 @@ def test_config_flow_add_vehicle_validates_and_stores():
     assert flow._vehicles[-1]["plug_entity"] == "binary_sensor.enyaq_plug"
 
 
+def test_options_add_stores_a_stripped_wake_action_and_an_empty_string_when_omitted():
+    cf = _cf()
+    flow = _options_flow(cf)
+    result = asyncio.run(flow.async_step_add_vehicle({**BASE_INPUT, "wake_action": " button.skoda_enyaq_wake_up_car "}))
+    assert result["type"] == "create_entry"
+    assert _saved_vehicles(flow)[-1]["wake_action"] == "button.skoda_enyaq_wake_up_car"
+
+    flow = _options_flow(cf)
+    asyncio.run(flow.async_step_add_vehicle(dict(BASE_INPUT)))
+    assert _saved_vehicles(flow)[-1]["wake_action"] == ""
+
+
+def test_options_add_rejects_a_bad_wake_action():
+    cf = _cf()
+    flow = _options_flow(cf)
+    result = asyncio.run(flow.async_step_add_vehicle({**BASE_INPUT, "wake_action": "not_an_action"}))
+    assert result["type"] == "form" and result["errors"] == {"wake_action": "wake_action_invalid"}
+    flow.hass.config_entries.async_update_entry.assert_not_called()
+
+
+def test_options_edit_stores_replaces_and_clears_the_wake_action():
+    cf = _cf()
+    flow = _options_flow(cf)
+    flow._edit_index = 0
+    asyncio.run(flow.async_step_edit_vehicle({"name": "Kia eNiro", "capacity_kwh": 64.0,
+                                              "wake_action": " kia_uvo.force_update "}))
+    assert _saved_vehicles(flow)[0]["wake_action"] == "kia_uvo.force_update"
+
+    flow = _options_flow(cf, vehicles=[{**OLD, "wake_action": "kia_uvo.force_update"}])
+    flow._edit_index = 0
+    asyncio.run(flow.async_step_edit_vehicle({"name": "Kia eNiro", "capacity_kwh": 64.0}))
+    assert _saved_vehicles(flow)[0]["wake_action"] == ""
+
+
+def test_options_edit_rejects_a_bad_wake_action():
+    cf = _cf()
+    flow = _options_flow(cf)
+    flow._edit_index = 0
+    result = asyncio.run(flow.async_step_edit_vehicle({"name": "Kia eNiro", "capacity_kwh": 64.0,
+                                                       "wake_action": "not_an_action"}))
+    assert result["type"] == "form" and result["errors"] == {"wake_action": "wake_action_invalid"}
+    flow.hass.config_entries.async_update_entry.assert_not_called()
+
+
+def test_config_flow_add_vehicle_validates_wake_action_and_stores():
+    cf = _cf()
+    flow = cf.OCPPChargerConfigFlow()
+    flow.hass = MagicMock()
+    bad = asyncio.run(flow.async_step_add_vehicle({**BASE_INPUT, "wake_action": "not_an_action"}))
+    assert bad["type"] == "form" and bad["errors"] == {"wake_action": "wake_action_invalid"}
+    assert flow._vehicles == []
+
+    asyncio.run(flow.async_step_add_vehicle({**BASE_INPUT, "wake_action": " kia_uvo.force_update "}))
+    assert flow._vehicles[-1]["wake_action"] == "kia_uvo.force_update"
+
+
 # ── väntetidssteget ──────────────────────────────────────────────────────────────────────────────────────────────
 
 def test_menu_offers_the_detection_settings_and_routes_to_the_step():
@@ -140,9 +227,9 @@ def test_menu_offers_the_detection_settings_and_routes_to_the_step():
     assert step["type"] == "form" and step["step_id"] == "edit_detection"
 
 
-def test_detection_step_defaults_to_60_or_the_saved_value():
+def test_detection_step_defaults_to_90_or_the_saved_value():
     cf = _cf()
-    for data, expected in (({}, 60), ({"plug_wait_seconds": 120}, 120)):
+    for data, expected in (({}, 90), ({"plug_wait_seconds": 120}, 120)):
         flow = _options_flow(cf, **data)
         form = asyncio.run(flow.async_step_edit_detection(None))
         key = next(k for k in form["data_schema"].schema if str(k) == "plug_wait_seconds")
@@ -189,6 +276,23 @@ def test_strings_have_the_plug_entity_error_in_config_and_options():
         d = _load(rel)
         assert d["config"]["error"]["plug_entity_invalid"].strip(), rel
         assert d["options"]["error"]["plug_entity_invalid"].strip(), rel
+
+
+def test_strings_have_label_and_description_for_the_wake_action_in_all_three_vehicle_steps():
+    for rel in STRING_FILES:
+        d = _load(rel)
+        steps = (d["config"]["step"]["add_vehicle"], d["options"]["step"]["add_vehicle"],
+                 d["options"]["step"]["edit_vehicle"])
+        for step in steps:
+            assert step["data"]["wake_action"].strip(), rel
+            assert step["data_description"]["wake_action"].strip(), rel
+
+
+def test_strings_have_the_wake_action_error_in_config_and_options():
+    for rel in STRING_FILES:
+        d = _load(rel)
+        assert d["config"]["error"]["wake_action_invalid"].strip(), rel
+        assert d["options"]["error"]["wake_action_invalid"].strip(), rel
 
 
 def test_strings_have_the_detection_step():

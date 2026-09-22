@@ -619,7 +619,8 @@ inklusive varje sensors råa state (`ocpp_charger_debug.log`, **inte** `home-ass
 de är INFO-nivå och Feature 9 håller HA-loggen till WARNING+).
 
 **Väntefönster:** `plug_wait_seconds` (number-fritt fält i options-flowet "🔎 Edit vehicle
-detection settings", standard 60 s, 0–600, 0 = fråga direkt) läses från `entry.data` vid varje
+detection settings", standard 90 s – höjt från 60 s, Feature 10c, se nedan – 0–600, 0 = fråga
+direkt) läses från `entry.data` vid varje
 anslutning (en options-ändring gäller alltså nästa session, ingen omstart krävs). Under väntan
 lyssnar en `async_track_state_change_event` bara på de konfigurerade sensorerna; varje ändring
 kör beslutstabellen igen. Lyssnaren och timern (`async_call_later`) lever bara under
@@ -644,6 +645,28 @@ delad valideringshjälpare `_plug_entity_error()`. Fältet har medvetet **ingen*
 värdet när frontend utelämnar ett tömt fält, så en sparad sensor skulle aldrig gå att ta bort
 (samma lärdom som `syslog_host`, Feature 9).
 
+### Väckning av bilen vid väntefönstret (Feature 10c)
+Varje fordon kan också få ett valfritt fält `wake_action` (`VEHICLE_WAKE_ACTION`), direkt efter
+`plug_entity` i schemat/lagringen (samma tre ställen, samma no-`default=`-mönster). Ett format
+täcker båda integrationsmönstren utan att koordinatorn behöver veta vilket bilmärke det gäller:
+- `button.<entitet>` (t.ex. MySkodas `button.skoda_enyaq_wake_up_car`) → `button.press`.
+- Annars tolkas hela värdet som `<domän>.<tjänst>` (t.ex. `kia_uvo.force_update`) → anropas
+  direkt utan mål-entitet.
+
+Validering (`_wake_action_error()`, delad av alla tre lagringsställena):
+`^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$` (täcker båda formaten – felkod `wake_action_invalid`).
+Tjänstens/entitetens faktiska existens kontrolleras **inte** vid konfigurationstillfället
+(`kia_uvo.force_update` kan saknas tills bilintegrationen laddat – det vore en falsk röd flagga).
+
+Koordinatormetod `_wake_vehicles()`, anropad **en gång** från `_start_plug_wait()` när ett
+väntefönster startar (`|P|=0`) – även när `plug_wait_seconds=0` (bilarna väcks ändå, bara ingen
+väntan sker innan notisen). Best effort: `try/except Exception` per bil, `_LOGGER.warning` vid
+fel, stoppar aldrig resten av flödet – samma mönster som `kia_uvo.force_update`-anropet i
+`_send_stop_notification()`, som lämnas orört (annat sammanhang: laddstopp/kabel-ur). En
+bilspecifik service-existens-miss (t.ex. `ServiceNotFound`) manifesterar sig asynkront inuti
+den schemalagda tasken, inte synkront vid schemaläggningen – samma begränsning som det
+befintliga mönstret, oförändrad av Feature 10c.
+
 **Kända begränsningar:** sensorn visar "inkopplad någonstans", inte i just den här laddaren –
 en förbättring vore att kombinera med `device_tracker` (`PRESENCE_ENTITIES`). Molnsensorer kan
 ligga efter i tiden (observerat live 2026-09-22: OCPP-SoC-fallbacken matchade fel bil när Kians
@@ -661,7 +684,13 @@ ett bilbyte precis som ett SoC-match gjorde innan, oförändrat sedan Bug 41.
 väntetiden" (båda `off`, notis `none_plugged` efter 60 s, SoC-fallbacken matchade fel bil –
 förväntat, inte en Feature 10-bugg) och "användarens val vinner" (tryck på Kia → `[Vehicle]
 Switched to Kia eNiro`, `Active Vehicle`-entiteten bekräftar bytet). Scenario 1/2 (direkt match)
-och 12 (väntetidsändring) ännu inte observerade live.
+och 12 (väntetidsändring) ännu inte observerade live. (60 s var väntetiden vid det här testet –
+höjd till 90 s av Feature 10c, se ovan.)
+
+**Feature 10c (`wake_action`) är implementerad och enhetstestad men ännu inte deployad eller
+live-verifierad** – kräver en skarp omstart och en väntesession med riktig kabel för att
+bekräfta att `button.press`/`kia_uvo.force_update` faktiskt triggas och att Skodan svarar
+snabbare än innan.
 
 ## Testinstans
 | Parameter | Värde |
