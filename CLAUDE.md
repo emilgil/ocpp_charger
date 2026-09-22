@@ -711,7 +711,9 @@ Feature 10c ovan (`VEHICLE_WAKE_ACTION` måste finnas) – kunde inte implemente
 regressionstester på båda anropsställena (Enyaq väcks via `button.press`, Kia fortsatt via
 `kia_uvo.force_update`).
 
-**Inte ännu deployad/live-verifierad.**
+**Deployad 2026-09-22 21:56** – ren omstart, inga fel, 41 entiteter laddade. **Inte ännu
+live-verifierad**: kräver ett riktigt laddstopp med Enyaq som aktiv bil för att bekräfta att
+`button.press` faktiskt triggas i stopp-flödet.
 
 ## Testinstans
 | Parameter | Värde |

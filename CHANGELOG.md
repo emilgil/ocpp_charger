@@ -25,7 +25,12 @@ bil/inget fordon/fordon utan `wake_action`-nyckel, samt regressionstester på b�
 anropsställena (Enyaq väcks via `button.press`, Kia fortsatt via `kia_uvo.force_update`, ingen
 regression). Full svit grön (286 tester).
 
-**Deploy/live-verifiering:** ej ännu utfört.
+**Deploy 2026-09-22 21:56** (`__init__.py`; full HA-omstart, kabeln urkopplad). Rent: inga
+WARNING/ERROR/Traceback i `home-assistant.log` eller `ocpp_charger_debug.log`, alla 41
+entiteter laddade. **Inte ännu live-verifierat**: kräver ett riktigt laddstopp med Enyaq som
+aktiv bil för att bekräfta att `button.press` faktiskt triggas i stopp-flödet (Kias
+`kia_uvo.force_update`-väg är beteendemässigt oförändrad, så den delen är redan implicit
+verifierad av produktionshistoriken).
 
 ## 2026-09-22 (kväll): Feature 10c – väckning av bilen vid väntefönstret (`wake_action`)
 
