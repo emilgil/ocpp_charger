@@ -44,6 +44,7 @@ from .const import (
     REST_AUTH_NONE,
     REST_AUTH_TYPES,
     CONF_NUM_PHASES,
+    CONF_PLUG_WAIT_SECONDS,
     CONF_PORT,
     CONF_SCHEDULE_DAY_CURRENT,
     CONF_SCHEDULE_DAY_START,
@@ -63,6 +64,7 @@ from .const import (
     DEFAULT_MAX_CURRENT,
     DEFAULT_MQTT_PREFIX,
     DEFAULT_NUM_PHASES,
+    DEFAULT_PLUG_WAIT_SECONDS,
     DEFAULT_PORT,
     DEFAULT_SCHEDULE_DAY_CURRENT,
     DEFAULT_SCHEDULE_DAY_START,
@@ -73,6 +75,7 @@ from .const import (
     DOMAIN,
     VEHICLE_CAPACITY,
     VEHICLE_NAME,
+    VEHICLE_PLUG_ENTITY,
     VEHICLE_SOC_ENTITY,
 )
 
@@ -116,6 +119,14 @@ def _vehicle_label(v: dict) -> str:
     return f"{v[VEHICLE_NAME]} – {v[VEHICLE_CAPACITY]} kWh"
 
 
+def _plug_entity_error(user_input: dict) -> str | None:
+    """Feature 10: the optional plug sensor must be a binary_sensor (empty = no sensor)."""
+    value = user_input.get(VEHICLE_PLUG_ENTITY, "").strip()
+    if value and not value.startswith("binary_sensor."):
+        return "plug_entity_invalid"
+    return None
+
+
 def _vehicle_schema(defaults: dict | None = None) -> vol.Schema:
     d = defaults or {}
     return vol.Schema({
@@ -126,6 +137,11 @@ def _vehicle_schema(defaults: dict | None = None) -> vol.Schema:
             NumberSelectorConfig(min=5.0, max=200.0, step=0.5,
                 unit_of_measurement="kWh", mode=NumberSelectorMode.BOX)),
         vol.Optional(VEHICLE_SOC_ENTITY, default=d.get(VEHICLE_SOC_ENTITY, "")): str,
+        # Feature 10: no default= on purpose. HA's frontend omits an emptied field and voluptuous would re-inject
+        # the saved value, so a saved plug sensor could never be removed (same lesson as syslog_host, Feature 9).
+        vol.Optional(
+            VEHICLE_PLUG_ENTITY, description={"suggested_value": d.get(VEHICLE_PLUG_ENTITY, "")}
+        ): str,
         vol.Optional(VEHICLE_SOC_UNIT, default=d.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT)): vol.In(SOC_UNITS),
         vol.Optional(VEHICLE_MAX_CURRENT_A, default=d.get(VEHICLE_MAX_CURRENT_A, 0)): NumberSelector(
             NumberSelectorConfig(min=0, max=32, step=1,
@@ -200,11 +216,14 @@ class OCPPChargerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             name = user_input.get(VEHICLE_NAME, "").strip()
             if not name:
                 errors[VEHICLE_NAME] = "vehicle_name_required"
+            elif plug_error := _plug_entity_error(user_input):
+                errors[VEHICLE_PLUG_ENTITY] = plug_error
             else:
                 vehicle = {
                     VEHICLE_NAME:         name,
                     VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
                     VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
+                    VEHICLE_PLUG_ENTITY:  user_input.get(VEHICLE_PLUG_ENTITY, "").strip(),
                     VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
                     VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 }
@@ -343,6 +362,7 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         self._planner_data: dict = {}
         self._notify_data: dict = {}
         self._logging_data: dict = {}
+        self._detection_data: dict = {}
         self._vehicles: list[dict] = copy.deepcopy(
             config_entry.data.get(CONF_VEHICLES, [])
         )
@@ -370,6 +390,8 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_edit_rest()
             elif action == "planner":
                 return await self.async_step_edit_planner()
+            elif action == "detection":
+                return await self.async_step_edit_detection()
             elif action == "notify":
                 return await self.async_step_edit_notify()
             elif action == "logging":
@@ -387,6 +409,7 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         choices["mqtt"]     = "📡 Edit MQTT topic prefix"
         choices["rest"]     = "🔌 Edit REST API settings"
         choices["planner"]  = "📅 Edit charge planner settings"
+        choices["detection"] = "🔎 Edit vehicle detection settings"
         choices["notify"]   = "🔔 Edit notification settings"
         choices["logging"]  = "📝 Edit logging settings"
         choices["done"]     = "✅ Save and close"
@@ -411,11 +434,14 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
             name = user_input.get(VEHICLE_NAME, "").strip()
             if not name:
                 errors[VEHICLE_NAME] = "vehicle_name_required"
+            elif plug_error := _plug_entity_error(user_input):
+                errors[VEHICLE_PLUG_ENTITY] = plug_error
             else:
                 self._vehicles.append({
                     VEHICLE_NAME:         name,
                     VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
                     VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
+                    VEHICLE_PLUG_ENTITY:  user_input.get(VEHICLE_PLUG_ENTITY, "").strip(),
                     VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
                     VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 })
@@ -438,11 +464,14 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
             name = user_input.get(VEHICLE_NAME, "").strip()
             if not name:
                 errors[VEHICLE_NAME] = "vehicle_name_required"
+            elif plug_error := _plug_entity_error(user_input):
+                errors[VEHICLE_PLUG_ENTITY] = plug_error
             else:
                 self._vehicles[idx] = {
                     VEHICLE_NAME:         name,
                     VEHICLE_CAPACITY:     float(user_input[VEHICLE_CAPACITY]),
                     VEHICLE_SOC_ENTITY:   user_input.get(VEHICLE_SOC_ENTITY, "").strip(),
+                    VEHICLE_PLUG_ENTITY:  user_input.get(VEHICLE_PLUG_ENTITY, "").strip(),
                     VEHICLE_SOC_UNIT:     user_input.get(VEHICLE_SOC_UNIT, SOC_UNIT_PERCENT),
                     VEHICLE_MAX_CURRENT_A: int(user_input.get(VEHICLE_MAX_CURRENT_A, 0)),
                 }
@@ -560,6 +589,25 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         })
         return self.async_show_form(step_id="edit_planner", data_schema=schema)
 
+    async def async_step_edit_detection(
+        self, user_input: dict | None = None
+    ) -> FlowResult:
+        """Feature 10: how long to wait for a vehicle's plug sensor to turn on before asking which vehicle charges."""
+        if user_input is not None:
+            self._detection_data = {
+                CONF_PLUG_WAIT_SECONDS: int(user_input.get(CONF_PLUG_WAIT_SECONDS, DEFAULT_PLUG_WAIT_SECONDS)),
+            }
+            return await self.async_step_init()
+
+        cfg = self._config_entry.data
+        schema = vol.Schema({
+            vol.Optional(CONF_PLUG_WAIT_SECONDS,
+                default=cfg.get(CONF_PLUG_WAIT_SECONDS, DEFAULT_PLUG_WAIT_SECONDS)): NumberSelector(
+                    NumberSelectorConfig(min=0, max=600, step=5,
+                        unit_of_measurement="s", mode=NumberSelectorMode.BOX)),
+        })
+        return self.async_show_form(step_id="edit_detection", data_schema=schema)
+
     async def async_step_edit_notify(
         self, user_input: dict | None = None
     ) -> FlowResult:
@@ -659,6 +707,8 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
             new_data.update(self._notify_data)
         if hasattr(self, "_logging_data"):
             new_data.update(self._logging_data)
+        if hasattr(self, "_detection_data"):
+            new_data.update(self._detection_data)
         self.hass.config_entries.async_update_entry(
             self._config_entry, data=new_data
         )

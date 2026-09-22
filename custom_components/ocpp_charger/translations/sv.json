@@ -21,7 +21,11 @@
           "name": "Vehicle name",
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
+          "plug_entity": "Inkopplad-sensor för bilen (binary_sensor) – valfritt",
           "add_another": "What would you like to do next?"
+        },
+        "data_description": {
+          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor."
         }
       },
       "schedule": {
@@ -52,7 +56,8 @@
       "cannot_connect": "Could not connect to the charger",
       "invalid_host": "Invalid IP address",
       "vehicle_name_required": "Vehicle name is required",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "plug_entity_invalid": "Inkopplad-sensorn måste vara en binary_sensor-entitet (binary_sensor.…)"
     },
     "abort": {
       "already_configured": "This charger is already configured"
@@ -73,7 +78,11 @@
           "name": "Vehicle name",
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
+          "plug_entity": "Inkopplad-sensor för bilen (binary_sensor) – valfritt",
           "soc_unit": "SOC-enhet (procent eller kWh)"
+        },
+        "data_description": {
+          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor."
         }
       },
       "edit_vehicle": {
@@ -82,7 +91,11 @@
           "name": "Vehicle name",
           "capacity_kwh": "Battery capacity (kWh)",
           "soc_entity": "Battery level (SOC) entity – optional",
+          "plug_entity": "Inkopplad-sensor för bilen (binary_sensor) – valfritt",
           "soc_unit": "SOC-enhet (procent eller kWh)"
+        },
+        "data_description": {
+          "plug_entity": "En binary_sensor som visar att just den här bilen är inkopplad (state 'on' = inkopplad). Används för att avgöra vilken bil som är ansluten. Lämna tomt om bilen saknar sådan sensor."
         }
       },
       "remove_vehicle": {
@@ -147,11 +160,19 @@
           "syslog_port": "Syslog UDP-port",
           "syslog_level": "Lägsta nivå som skickas till syslog"
         }
+      },
+      "edit_detection": {
+        "title": "Bilidentifiering",
+        "description": "När en kabel kopplas in och ingen bils inkopplad-sensor visar 'on' än, väntar integrationen så här länge på att en sensor slår om innan den frågar vilken bil som laddar.",
+        "data": {
+          "plug_wait_seconds": "Väntetid för inkopplad-sensor (sekunder, 0 = vänta inte)"
+        }
       }
     },
     "error": {
       "rest_username_required": "Username is required for Basic auth",
-      "rest_token_required": "Bearer token is required for Bearer auth"
+      "rest_token_required": "Bearer token is required for Bearer auth",
+      "plug_entity_invalid": "Inkopplad-sensorn måste vara en binary_sensor-entitet (binary_sensor.…)"
     }
   }
 }

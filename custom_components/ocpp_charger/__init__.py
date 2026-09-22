@@ -71,6 +71,13 @@ from .const import (
     NOTIFY_ACTION_SELECT_VEHICLE,
     NOTIFY_ACTION_KEEP_TODAY,
     NOTIFY_ACTION_WAIT_TOMORROW,
+    CONF_PLUG_WAIT_SECONDS,
+    DEFAULT_PLUG_WAIT_SECONDS,
+    PLUG_OUTCOME_MATCHED,
+    PLUG_OUTCOME_NOTIFY,
+    PLUG_OUTCOME_WAIT,
+    PLUG_REASON_NONE,
+    VEHICLE_PLUG_ENTITY,
     PLANNER_ALGO_GREEDY,
     PLANNER_ALGO_CONTIGUOUS,
     SELECT_PLANNER_ALGORITHM,
@@ -117,7 +124,7 @@ from .charging_start import restore_charging_start, serialize_charging_start
 from .clear_profile import parse_clear_request, refused_result
 from . import logging_setup
 from .notifier import ChargerNotifier
-from .vehicle_detection import identify_vehicle
+from .vehicle_detection import identify_by_plug_sensor, identify_vehicle
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -220,6 +227,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.info("[Notify] User selected vehicle: %s", vehicle.get(VEHICLE_NAME, idx))
                     coordinator.set_active_vehicle(vehicle)
                     coordinator._update_charge_plan()
+                    coordinator.on_vehicle_chosen_by_user(vehicle)  # Feature 10
                     coordinator.async_set_updated_data(coordinator.ocpp.state)
             except ValueError:
                 _LOGGER.warning("[Notify] Invalid vehicle index in action: %s", action)
@@ -411,6 +419,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._state_loaded: bool = False           # _load_state() finished (also when the Store was empty)
         self._charger_was_connected: bool = False  # edge detector for the charger's WebSocket connect
         self._last_detection_reason: str = ""
+        # Feature 10: per-vehicle "plugged in" sensor identification
+        self._plug_wait_cancel = None                 # async_call_later handle – only while waiting for a sensor to turn on
+        self._plug_state_unsub = None                 # async_track_state_change_event handle – only while waiting
+        self._vehicle_manually_chosen: bool = False   # the user picked a vehicle this cable session – automation keeps off
+        self._selection_notified: bool = False        # the vehicle-selection notification was sent this cable session
         self.adhoc_vehicle_active: bool = False
 
         # Day/night current schedule
@@ -594,6 +607,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
     async def async_stop(self) -> None:
         """Stop everything cleanly."""
+        self._reset_vehicle_selection()  # Feature 10: no timer/listener/notification outlives the coordinator
         for unsub in self._mqtt_unsubscribers:
             unsub()
         self._mqtt_unsubscribers.clear()
@@ -866,19 +880,153 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     _prev_soc if _prev_soc is not None else 0.0,
                     f"{_new_soc:.1f}%" if _new_soc is not None else "unknown",
                 )
-            ocpp_soc = self.ocpp.state.soc_percent
-            vehicle, reason = identify_vehicle(
-                self._vehicles, ocpp_soc, self.hass
-            )
-            if vehicle and vehicle is not self.active_vehicle:
-                _LOGGER.info("[AutoDetect] %s", reason)
-                self.set_active_vehicle(vehicle)
-                # Persist detection reason as attribute on the select entity
-                self._last_detection_reason = reason
-            elif vehicle:
-                _LOGGER.debug("Auto-detection: ingen ändring (%s)", reason)
+            self._identify_vehicle_on_connect()
 
         self._last_connector_status = current_status
+
+    def _identify_vehicle_on_connect(self) -> None:
+        """Feature 10: pick the vehicle for a fresh cable connection.
+
+        The per-vehicle plug sensors decide when they can. Whenever they can't (none configured, still
+        waiting, or the user has to choose) the existing SoC logic runs at once, so a vehicle is always
+        active and planning never stalls; the user's later choice then replaces it.
+        """
+        if self._vehicle_manually_chosen:
+            _LOGGER.debug("[VehicleDetect] Fordonet valdes manuellt i den här kabelsessionen – ingen automatisk identifiering")
+            return
+        detection = identify_by_plug_sensor(self._vehicles, self.hass)
+        if detection.outcome == PLUG_OUTCOME_MATCHED:
+            self._apply_plug_match(detection)
+            return
+        self._apply_soc_detection()
+        if detection.outcome == PLUG_OUTCOME_NOTIFY:
+            self._send_vehicle_selection(detection.reason_code)
+        elif detection.outcome == PLUG_OUTCOME_WAIT:
+            self._start_plug_wait()
+
+    def _apply_soc_detection(self) -> None:
+        """The SoC-based identification exactly as it worked before Feature 10."""
+        ocpp_soc = self.ocpp.state.soc_percent
+        vehicle, reason = identify_vehicle(
+            self._vehicles, ocpp_soc, self.hass
+        )
+        if vehicle and vehicle is not self.active_vehicle:
+            _LOGGER.info("[AutoDetect] %s", reason)
+            self.set_active_vehicle(vehicle)
+            # Persist detection reason as attribute on the select entity
+            self._last_detection_reason = reason
+        elif vehicle:
+            _LOGGER.debug("Auto-detection: ingen ändring (%s)", reason)
+
+    def _apply_plug_match(self, detection) -> None:
+        """A plug sensor identified the vehicle. The reason is recorded even when the vehicle doesn't change."""
+        vehicle = detection.vehicle
+        _LOGGER.info("[AutoDetect] %s", detection.reason)
+        self._last_detection_reason = detection.reason
+        if vehicle is not self.active_vehicle:
+            self.set_active_vehicle(vehicle)
+
+    def _plug_wait_seconds(self) -> int:
+        """How long to wait for a plug sensor to turn on. Read from entry.data on every connection (an options
+        change applies to the next cable connection); a bad value falls back to the default."""
+        raw = self.entry.data.get(CONF_PLUG_WAIT_SECONDS, DEFAULT_PLUG_WAIT_SECONDS)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return DEFAULT_PLUG_WAIT_SECONDS
+
+    def _start_plug_wait(self) -> None:
+        """No vehicle shows plugged in yet: listen to the plug sensors for plug_wait_seconds, then ask."""
+        seconds = self._plug_wait_seconds()
+        self._cancel_plug_wait()
+        if seconds <= 0:
+            _LOGGER.info("[VehicleDetect] Ingen bil visar inkopplad och väntetiden är 0 – frågar direkt")
+            self._send_vehicle_selection(PLUG_REASON_NONE)
+            return
+        plug_entities = [v[VEHICLE_PLUG_ENTITY] for v in self._vehicles if v.get(VEHICLE_PLUG_ENTITY, "")]
+        self._plug_state_unsub = async_track_state_change_event(
+            self.hass, plug_entities, self._on_plug_sensor_change,
+        )
+        self._plug_wait_cancel = async_call_later(self.hass, seconds, self._on_plug_wait_timeout)
+        _LOGGER.info("[VehicleDetect] Ingen bil visar inkopplad – väntar upp till %d s på en sensor", seconds)
+
+    @callback
+    def _on_plug_sensor_change(self, event) -> None:
+        """A plug sensor changed while waiting: run the decision table again."""
+        self._reevaluate_plug_detection(timed_out=False)
+
+    @callback
+    def _on_plug_wait_timeout(self, _now) -> None:
+        """The wait window is over."""
+        self._plug_wait_cancel = None   # fired: nothing left to cancel
+        self._reevaluate_plug_detection(timed_out=True)
+
+    def _reevaluate_plug_detection(self, *, timed_out: bool) -> None:
+        """Decision table again during the wait window (sensor change or timeout). The SoC fallback already ran."""
+        if self._vehicle_manually_chosen:
+            self._cancel_plug_wait()
+            return
+        detection = identify_by_plug_sensor(self._vehicles, self.hass)
+        if detection.outcome == PLUG_OUTCOME_WAIT and not timed_out:
+            _LOGGER.debug("[VehicleDetect] Sensorändring men fortfarande ingen inkopplad – väntar vidare")
+            return
+        self._cancel_plug_wait()
+        if detection.outcome == PLUG_OUTCOME_MATCHED:
+            self._apply_plug_match(detection)
+        elif detection.outcome == PLUG_OUTCOME_NOTIFY:
+            self._send_vehicle_selection(detection.reason_code)
+        elif detection.outcome == PLUG_OUTCOME_WAIT:   # timed out with nothing plugged in
+            self._send_vehicle_selection(PLUG_REASON_NONE)
+
+    def _send_vehicle_selection(self, reason_code: str) -> None:
+        """Ask the user which vehicle is charging – at most once per cable session."""
+        if self._selection_notified:
+            return
+        self._selection_notified = True
+        active = self.active_vehicle.get(VEHICLE_NAME, "") if self.active_vehicle else ""
+        _LOGGER.info(
+            "[VehicleDetect] Ber användaren välja fordon (orsak=%s, aktivt just nu: %s)",
+            reason_code, active or "–",
+        )
+        self.notifier.on_vehicle_selection_needed(reason_code, self._vehicles, active)
+
+    def _cancel_plug_wait(self) -> None:
+        """Stop the plug-sensor wait window (timer and sensor listener). Safe to call repeatedly."""
+        if self._plug_wait_cancel is not None:
+            self._plug_wait_cancel()
+            self._plug_wait_cancel = None
+        if self._plug_state_unsub is not None:
+            self._plug_state_unsub()
+            self._plug_state_unsub = None
+
+    def _reset_vehicle_selection(self) -> None:
+        """Cable out / stop / unload: drop the wait window and the selection notification, forget a manual choice."""
+        self._cancel_plug_wait()
+        if self._selection_notified:
+            self.notifier.clear_vehicle_selection_notification()
+        # Bugfix: on_cable_connected's own vehicle-select notification (tag ocpp_cable_connected) is sent
+        # independently of _selection_notified whenever >1 vehicle is registered, so it needs its own unconditional
+        # dismiss here too – otherwise it lingers until the next cable session's copy replaces it, hours later.
+        self.notifier.dismiss_cable_connected_notification()
+        self._selection_notified = False
+        self._vehicle_manually_chosen = False
+
+    def on_vehicle_chosen_by_user(self, vehicle: dict) -> None:
+        """The user picked a vehicle in a notification (Feature 10). The choice stands for the rest of the cable session:
+        the wait window ends and no automation overwrites it until the cable is pulled (see _reset_vehicle_selection)."""
+        self._cancel_plug_wait()
+        # A tap while no cable is connected (a lingering "Laddkabel inkopplad" notification) has no cable session to
+        # protect. Arming the flag then would make the NEXT connection skip identification altogether: nothing clears
+        # it before that Preparing (no OCPP updates while the cable is out). The vehicle still becomes active (the
+        # action handler already did that); the next connection simply identifies again.
+        if self.ocpp.state.connector_status != "Available":
+            self._vehicle_manually_chosen = True
+        self._last_detection_reason = f"Manually selected: {vehicle.get(VEHICLE_NAME, '?')}"
+        if self._selection_notified:
+            self.notifier.clear_vehicle_selection_notification()
+        # Bugfix: the question is answered either way, even if it was the legacy "Laddkabel inkopplad" notification
+        # (not this coordinator's own _selection_notified) that the user actually tapped.
+        self.notifier.dismiss_cable_connected_notification()
 
     def _update_soc_from_ha(self) -> None:
         """Update SOC using a three-level priority chain.
@@ -1745,6 +1893,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._next_day_shift_hold = False
             self._next_day_shift_candidate = None
             self._next_day_shift_accepted = False
+            self._reset_vehicle_selection()  # Feature 10: cable out ends the wait window, the notification and a manual choice
             self._session_total_kwh = 0.0  # Fix 7: reset accumulated energy
             self._cable_session_notified_connect = False  # Fix 9: reset connect-notif flag
             self._cable_connect_time = None  # Fix 4: reset SOC reread

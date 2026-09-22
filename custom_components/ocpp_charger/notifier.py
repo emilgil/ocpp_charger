@@ -55,7 +55,7 @@ class ChargerNotifier:
         vehicles: list | None = None,
     ) -> None:
         """Notify when cable is plugged in. Actionable if multiple vehicles configured."""
-        from .const import NOTIFY_ACTION_SELECT_VEHICLE, VEHICLE_NAME
+        from .const import NOTIFY_ACTION_SELECT_VEHICLE, NOTIFY_TAG_CABLE_CONNECTED, VEHICLE_NAME
 
         header = "🔌 Laddkabel inkopplad"
         if vehicle_name:
@@ -101,7 +101,7 @@ class ChargerNotifier:
             }
             data_block: dict = {}
             if actions:
-                data_block["tag"] = "ocpp_cable_connected"
+                data_block["tag"] = NOTIFY_TAG_CABLE_CONNECTED
                 data_block["actions"] = actions
             if self.dashboard_url:
                 data_block["url"] = self.dashboard_url           # iOS
@@ -317,6 +317,118 @@ class ChargerNotifier:
             _LOGGER.info("[Notify] Dismissed next-day-shift notification")
         except Exception as err:
             _LOGGER.warning("[Notify] Failed to dismiss notification: %s", err)
+
+    def on_vehicle_selection_needed(
+        self,
+        reason_code: str,
+        vehicles: list,
+        active_vehicle_name: str = "",
+    ) -> None:
+        """Actionable notification: the plug sensors couldn't tell which vehicle is charging (Feature 10).
+
+        Reuses the vehicle-select buttons of the cable-connected notification, so the existing action handler
+        applies the choice. Not gated by notify_on_connect: it is a question, not information.
+        """
+        from .const import (
+            NOTIFY_ACTION_SELECT_VEHICLE,
+            NOTIFY_TAG_VEHICLE_SELECT,
+            PLUG_REASON_MULTIPLE,
+            PLUG_REASON_NONE,
+            PLUG_REASON_PARTIAL,
+            VEHICLE_NAME,
+        )
+
+        messages = {
+            PLUG_REASON_MULTIPLE: "Flera bilar visar sig vara inkopplade. Välj vilken som laddar.",
+            PLUG_REASON_PARTIAL: (
+                "Kan inte avgöra vilken bil som är inkopplad "
+                "(alla bilar saknar inkopplad-sensor). Välj bil."
+            ),
+            PLUG_REASON_NONE: "Ingen bil visar sig vara inkopplad. Välj vilken som laddar.",
+        }
+        msg = messages.get(reason_code, "Kan inte avgöra vilken bil som är inkopplad. Välj bil.")
+
+        if not self.enabled or not self.notify_target:
+            _LOGGER.warning(
+                "[Notify] Vehicle selection needed (%s) but notifications are disabled or no notification target "
+                "is configured – keeping the SoC-based choice: %s", reason_code, active_vehicle_name or "–",
+            )
+            return
+        try:
+            actions = []
+            for i, v in enumerate(vehicles):
+                name = v.get(VEHICLE_NAME, f"Fordon {i+1}")
+                marker = " ✓" if name == active_vehicle_name else ""
+                actions.append({
+                    "action": f"{NOTIFY_ACTION_SELECT_VEHICLE}{i}",
+                    "title": f"{name}{marker}",
+                })
+            data_block: dict = {"tag": NOTIFY_TAG_VEHICLE_SELECT, "actions": actions}
+            if self.dashboard_url:
+                data_block["url"] = self.dashboard_url           # iOS
+                data_block["clickAction"] = self.dashboard_url   # Android
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify",
+                    self.notify_target.replace("notify.", "", 1),
+                    {
+                        "title": "EV Laddning – Välj bil",
+                        "message": msg,
+                        "data": data_block,
+                    },
+                )
+            )
+            _LOGGER.info("[Notify] Vehicle selection requested (%s)", reason_code)
+        except Exception as err:
+            _LOGGER.warning("[Notify] Failed to send vehicle-selection notification: %s", err)
+
+    def clear_vehicle_selection_notification(self) -> None:
+        """Clear the vehicle-selection notification from the phone (Feature 10)."""
+        if not self.enabled or not self.notify_target:
+            return
+        try:
+            from .const import NOTIFY_TAG_VEHICLE_SELECT
+
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify",
+                    self.notify_target.replace("notify.", "", 1),
+                    {
+                        "message": "clear_notification",
+                        "data": {"tag": NOTIFY_TAG_VEHICLE_SELECT},
+                    },
+                )
+            )
+            _LOGGER.info("[Notify] Cleared vehicle-selection notification")
+        except Exception as err:
+            _LOGGER.warning("[Notify] Failed to clear vehicle-selection notification: %s", err)
+
+    def dismiss_cable_connected_notification(self) -> None:
+        """Clear on_cable_connected's own vehicle-select notification from the phone (Feature 10 bugfix).
+
+        on_cable_connected offers the same per-vehicle buttons as on_vehicle_selection_needed whenever more than
+        one vehicle is registered, but nothing ever sent clear_notification for its tag – it only got replaced by
+        the next cable session's copy, hours later. Called wherever the vehicle question is resolved or the cable
+        session ends, alongside clear_vehicle_selection_notification.
+        """
+        if not self.enabled or not self.notify_target:
+            return
+        try:
+            from .const import NOTIFY_TAG_CABLE_CONNECTED
+
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify",
+                    self.notify_target.replace("notify.", "", 1),
+                    {
+                        "message": "clear_notification",
+                        "data": {"tag": NOTIFY_TAG_CABLE_CONNECTED},
+                    },
+                )
+            )
+            _LOGGER.info("[Notify] Cleared cable-connected notification")
+        except Exception as err:
+            _LOGGER.warning("[Notify] Failed to clear cable-connected notification: %s", err)
 
     def on_charger_disconnected(self, minutes: int) -> None:
         """Notify when charger WebSocket has been disconnected for a while."""
