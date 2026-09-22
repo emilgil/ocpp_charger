@@ -55,7 +55,7 @@ class ChargerNotifier:
         vehicles: list | None = None,
     ) -> None:
         """Notify when cable is plugged in. Actionable if multiple vehicles configured."""
-        from .const import NOTIFY_ACTION_SELECT_VEHICLE, VEHICLE_NAME
+        from .const import NOTIFY_ACTION_SELECT_VEHICLE, NOTIFY_TAG_CABLE_CONNECTED, VEHICLE_NAME
 
         header = "🔌 Laddkabel inkopplad"
         if vehicle_name:
@@ -101,7 +101,7 @@ class ChargerNotifier:
             }
             data_block: dict = {}
             if actions:
-                data_block["tag"] = "ocpp_cable_connected"
+                data_block["tag"] = NOTIFY_TAG_CABLE_CONNECTED
                 data_block["actions"] = actions
             if self.dashboard_url:
                 data_block["url"] = self.dashboard_url           # iOS
@@ -402,6 +402,33 @@ class ChargerNotifier:
             _LOGGER.info("[Notify] Cleared vehicle-selection notification")
         except Exception as err:
             _LOGGER.warning("[Notify] Failed to clear vehicle-selection notification: %s", err)
+
+    def dismiss_cable_connected_notification(self) -> None:
+        """Clear on_cable_connected's own vehicle-select notification from the phone (Feature 10 bugfix).
+
+        on_cable_connected offers the same per-vehicle buttons as on_vehicle_selection_needed whenever more than
+        one vehicle is registered, but nothing ever sent clear_notification for its tag – it only got replaced by
+        the next cable session's copy, hours later. Called wherever the vehicle question is resolved or the cable
+        session ends, alongside clear_vehicle_selection_notification.
+        """
+        if not self.enabled or not self.notify_target:
+            return
+        try:
+            from .const import NOTIFY_TAG_CABLE_CONNECTED
+
+            self.hass.async_create_task(
+                self.hass.services.async_call(
+                    "notify",
+                    self.notify_target.replace("notify.", "", 1),
+                    {
+                        "message": "clear_notification",
+                        "data": {"tag": NOTIFY_TAG_CABLE_CONNECTED},
+                    },
+                )
+            )
+            _LOGGER.info("[Notify] Cleared cable-connected notification")
+        except Exception as err:
+            _LOGGER.warning("[Notify] Failed to clear cable-connected notification: %s", err)
 
     def on_charger_disconnected(self, minutes: int) -> None:
         """Notify when charger WebSocket has been disconnected for a while."""

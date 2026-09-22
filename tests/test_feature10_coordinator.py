@@ -451,5 +451,33 @@ def test_the_wait_callbacks_are_event_loop_callbacks():
         assert is_callback(c._on_plug_wait_timeout)
 
 
+# ── Bug: on_cable_connected's egen vals-notis rensades aldrig ──────────────────────────────────────────────────────
+
+def test_a_manual_choice_also_dismisses_the_legacy_cable_connected_notification():
+    """[Bug] on_cable_connected skickar samma fordonsknappar (tag ocpp_cable_connected) som Feature 10:s egen
+    vals-notis, men bara den senare rensades vid ett val – den förra blev liggande kvar för alltid (till nästa
+    kabelsession skriver över den, tidigast timmar senare). Live-observerat 2026-09-22: användaren fick båda
+    notiserna och den äldre försvann inte trots ett lyckat val."""
+    with _patched() as (wires, soc):
+        c = _coordinator({ENYAQ_PLUG: "on", NIRO_PLUG: "on"})
+        _connect(c)   # multiple_plugged → Feature 10-notisen skickad
+
+        chosen = c._vehicles[0]
+        c.set_active_vehicle(chosen)
+        c.on_vehicle_chosen_by_user(chosen)
+
+        c.notifier.dismiss_cable_connected_notification.assert_called_once()
+
+
+def test_cable_out_also_dismisses_the_legacy_cable_connected_notification():
+    with _patched() as (wires, soc):
+        c = _coordinator({ENYAQ_PLUG: "off", NIRO_PLUG: "off"})
+        _connect(c)
+
+        _cable_out(c)
+
+        c.notifier.dismiss_cable_connected_notification.assert_called_once()
+
+
 if __name__ == "__main__":
     h.run_tests(globals())

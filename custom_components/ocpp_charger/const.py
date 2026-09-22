@@ -240,6 +240,8 @@ NOTIFY_ACTION_SELECT_VEHICLE = "ocpp_select_vehicle_"  # prefix; append vehicle 
 NOTIFY_ACTION_KEEP_TODAY     = "ocpp_keep_today_plan"      # Bug 40
 NOTIFY_ACTION_WAIT_TOMORROW  = "ocpp_wait_tomorrow_plan"   # Bug 40
 NOTIFY_TAG_VEHICLE_SELECT    = "ocpp_vehicle_select"       # Feature 10: own tag so it can be replaced/cleared separately
+NOTIFY_TAG_CABLE_CONNECTED   = "ocpp_cable_connected"      # on_cable_connected's own vehicle-select buttons (pre-Feature-10);
+                                                            # named so it can finally be dismissed (Bug: never cleared before)
 
 # Cumulative cost sensor
 SENSOR_TOTAL_COST = "total_charging_cost"

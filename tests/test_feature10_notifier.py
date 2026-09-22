@@ -115,5 +115,34 @@ def test_clear_does_nothing_without_a_target():
     hass.services.async_call.assert_not_called()
 
 
+def test_dismiss_cable_connected_sends_clear_notification_with_the_tag():
+    n, hass = _notifier()
+    n.dismiss_cable_connected_notification()
+    service, payload = _sent(hass)
+    assert service == "mobile_app_sm_s918b"
+    assert payload == {"message": "clear_notification", "data": {"tag": "ocpp_cable_connected"}}
+
+
+def test_dismiss_cable_connected_does_nothing_without_a_target():
+    n, hass = _notifier(target="")
+    n.dismiss_cable_connected_notification()
+    hass.services.async_call.assert_not_called()
+
+
+def test_cable_connected_and_its_dismiss_share_the_same_tag():
+    """[Bug] on_cable_connected's vehicle-select notification used a bare string literal with no matching dismiss
+    method anywhere in the codebase, so it could never be cleared programmatically (only replaced by the next
+    cable session's copy). This pins the two call sites to the same constant so they can't drift apart again."""
+    n, hass = _notifier()
+    n.on_cable_connected(None, None, None, None, None, vehicles=VEHICLES)
+    _, connect_payload = _sent(hass)
+    hass.services.async_call.reset_mock()
+
+    n.dismiss_cable_connected_notification()
+    _, dismiss_payload = _sent(hass)
+
+    assert connect_payload["data"]["tag"] == dismiss_payload["data"]["tag"] == "ocpp_cable_connected"
+
+
 if __name__ == "__main__":
     h.run_tests(globals())

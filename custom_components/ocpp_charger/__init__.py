@@ -1004,6 +1004,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._cancel_plug_wait()
         if self._selection_notified:
             self.notifier.clear_vehicle_selection_notification()
+        # Bugfix: on_cable_connected's own vehicle-select notification (tag ocpp_cable_connected) is sent
+        # independently of _selection_notified whenever >1 vehicle is registered, so it needs its own unconditional
+        # dismiss here too – otherwise it lingers until the next cable session's copy replaces it, hours later.
+        self.notifier.dismiss_cable_connected_notification()
         self._selection_notified = False
         self._vehicle_manually_chosen = False
 
@@ -1020,6 +1024,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._last_detection_reason = f"Manually selected: {vehicle.get(VEHICLE_NAME, '?')}"
         if self._selection_notified:
             self.notifier.clear_vehicle_selection_notification()
+        # Bugfix: the question is answered either way, even if it was the legacy "Laddkabel inkopplad" notification
+        # (not this coordinator's own _selection_notified) that the user actually tapped.
+        self.notifier.dismiss_cable_connected_notification()
 
     def _update_soc_from_ha(self) -> None:
         """Update SOC using a three-level priority chain.
