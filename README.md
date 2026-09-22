@@ -126,7 +126,9 @@ så laddningen väntar aldrig på ditt svar.
 Varje bil kan även få en valfri **väckningsåtgärd** (fältet **Wake action**) som körs en gång
 när en sådan väntan börjar – många bil-appar rapporterar inget förrän något väcker dem. Antingen
 en button-entitet (t.ex. MySkodas "Wake up car") eller en tjänst i formen `domän.tjänst` (t.ex.
-`kia_uvo.force_update`).
+`kia_uvo.force_update`). Samma väckningsåtgärd körs också för den bil som just laddat klart,
+innan "Laddning avslutad"-notisen skickas, så batterinivån i notisen är färsk oavsett vilken bil
+det gäller.
 
 ## Notiser
 
