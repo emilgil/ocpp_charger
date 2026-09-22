@@ -48,7 +48,7 @@ custom_components/ocpp_charger/
   select.py            – 3 select-entiteter
   switch.py            – 3 switchar
   button.py            – 2 knappar
-  vehicle_detection.py – Auto-identifiering av fordon
+  vehicle_detection.py – Auto-identifiering av fordon (SoC) + identify_by_plug_sensor (Feature 10, beslutstabell för inkopplad-sensor per bil)
   current_schedule.py  – Dag/natt-schema
   smart_charge.py      – Prisbeslut (fallback när ingen plan finns) + estimate_completion_time (ETA; tester i tests/test_smart_charge_bug36.py)
   charge_planner.py    – Optimal laddplanering baserat på spotpriser + is_next_day_shift (Bug 40, stdlib-only, testbar; tester i tests/test_bug40.py) + plan_immediate_window/pick_immediate_power_kw/immediate_window_wanted (Bug 42; tester i tests/test_bug42.py)
@@ -298,6 +298,10 @@ target_soc: float                         # 80.0 default
 battery_capacity_kwh: float               # 64.0 default
 num_phases: int                           # 3
 planner_algorithm: str                    # "Greedy (cheapest slots)"
+_plug_wait_cancel                         # Feature 10: async_call_later-handtag – bara satt under väntefönstret
+_plug_state_unsub                         # Feature 10: async_track_state_change_event-handtag – bara satt under väntefönstret
+_vehicle_manually_chosen: bool            # Feature 10: användaren har valt bil i den här kabelsessionen – automatik skriver inte över
+_selection_notified: bool                 # Feature 10: vals-notisen skickad denna kabelsession (max en gång)
 ```
 
 ## Entiteter
@@ -395,6 +399,29 @@ användaren svarat, hoppet upphört eller kabeln dragits ur.
 
 ### Klickbar dashboard-URL (Feature 2)
 Valfritt fält `CONF_NOTIFY_DASHBOARD_URL` i notis-konfigurationen. När det är satt injicerar `ChargerNotifier` `data.url` (iOS) + `data.clickAction` (Android) i alla notispayloads så att klick på notisen öppnar dashboarden i HA Companion-appen. Tomt fält → oförändrat beteende. Live-uppdateras via `_async_update_listener` utan omstart.
+
+### Bilvals-notis (Feature 10)
+`on_vehicle_selection_needed(reason_code, vehicles, active_vehicle_name)` skickas när
+`identify_by_plug_sensor()` inte kan avgöra vilken bil som laddar (`multiple_plugged`,
+`partial_sensors`, eller `none_plugged` efter väntefönstret – se "Bilidentifiering via
+inkopplad-sensor" nedan). Återanvänder `NOTIFY_ACTION_SELECT_VEHICLE{index}` (samma
+action-hanterare som `on_cable_connected`), egen tag `ocpp_vehicle_select`, en knapp per bil
+med ✓ på den just nu aktiva (SoC-fallbacken). Styrs **inte** av `notify_on_connect` – det är en
+fråga, inte information. `clear_vehicle_selection_notification()` rensar den när frågan
+besvaras eller kabelsessionen tar slut.
+
+**Bugfix (2026-09-22, live-upptäckt):** `on_cable_connected` skickar *samma* fordonsknappar
+(tag `ocpp_cable_connected`) när fler än en bil är registrerad, men hade aldrig haft en
+motsvarande rensningsmetod – `grep -rn "ocpp_cable_connected"` gav exakt en träff (sändstället)
+före fixen. Vid inkoppling fick användaren båda notiserna; ett tryck valde rätt bil korrekt
+(bekräftat i Graylog: `[Vehicle] Switched to Kia eNiro`), men "🔌 Laddkabel inkopplad"-notisen
+blev ändå liggande kvar tills nästa kabelsessions kopia (samma tag) skrev över den, timmar
+senare. Ny konstant `NOTIFY_TAG_CABLE_CONNECTED` (`on_cable_connected` använder den i stället
+för en bokstavlig sträng) + `notifier.dismiss_cable_connected_notification()`, anropad
+ovillkorligt från både `on_vehicle_chosen_by_user()` (frågan är besvarad, oavsett vilken av de
+två notiserna som faktiskt trycktes på) och `_reset_vehicle_selection()` (kabel ur/stopp/unload).
+Live-verifierad: `[Notify] Cleared cable-connected notification` avfyrades vid nästa
+`Available`-övergång efter deploy.
 
 ### Närvarobaserat dagladdningserbjudande (Bug 18)
 När `allow_day_charging` är av (vardagars autoschema) men kabeln är inkopplad och någon av `PRESENCE_ENTITIES` (telefon/bilar, se `const.py`) är hemma efter `DAY_OFFER_EARLIEST_HOUR` (09:00), skickas `on_day_charging_chosen` **om** en dag-plan faktiskt blir billigare per kWh än natt-planen. Jämförelsen använder `avg_price_ore_kwh` (inte `estimated_cost_sek`), så en partiell natt-plan (innan morgondagens priser publicerats) suppresserar inte erbjudandet (Bug 17). Max en gång per kalenderdag (`_day_offer_notified_date`). "☀️ Dag"-knappen sätter `_force_day_plan=True`.
@@ -569,6 +596,72 @@ propagate återställs vid unload.
   poster med `exc_info` får rätt källa – ingen ren kodlösning, verifieras live efter deploy. Poster som loggas mellan
   `remove_logging()` och nästa `apply_logging()` vid en omladdning (under en sekund) går varken till filen eller (under WARNING)
   till HA-loggen.
+
+## Bilidentifiering via inkopplad-sensor (Feature 10)
+Varje fordon kan få en valfri **"inkopplad"-sensor** (`plug_entity`, en `binary_sensor`, `on` =
+bilen är inkopplad). Den används som primär identifiering vid kabelanslutning; SoC-logiken
+(`identify_vehicle`, oförändrad) körs alltid direkt i alla lägen där sensorn inte avgör, så en
+bil alltid är aktiv och planeringen inte stannar.
+
+**Beslutstabell** (körs vid `Available → Preparing`, samma villkor som tidigare: auto-detektering
+på, minst 2 bilar), ren funktion `identify_by_plug_sensor()` i `vehicle_detection.py`:
+| Läge | Resultat |
+|------|----------|
+| Ingen bil har sensor konfigurerad | SoC-logiken, ingen notis |
+| Exakt en bil `on` och alla bilar har sensor | Match – bilen väljs, `_last_detection_reason` sätts även om bilen inte byts |
+| Exakt en bil `on`, inte alla bilar täckta | Notis `partial_sensors` direkt |
+| Två eller fler `on` | Notis `multiple_plugged` direkt |
+| Ingen bil `on` | Vänta (se nedan); vid timeout notis `none_plugged` |
+
+En sensor räknas som **användbar** bara vid state `on`/`off` – `unavailable`, `unknown`, tom
+eller saknad entitet räknas som ingen användbar sensor. Loggas med prefix `[VehicleDetect]`,
+inklusive varje sensors råa state (`ocpp_charger_debug.log`, **inte** `home-assistant.log` –
+de är INFO-nivå och Feature 9 håller HA-loggen till WARNING+).
+
+**Väntefönster:** `plug_wait_seconds` (number-fritt fält i options-flowet "🔎 Edit vehicle
+detection settings", standard 60 s, 0–600, 0 = fråga direkt) läses från `entry.data` vid varje
+anslutning (en options-ändring gäller alltså nästa session, ingen omstart krävs). Under väntan
+lyssnar en `async_track_state_change_event` bara på de konfigurerade sensorerna; varje ändring
+kör beslutstabellen igen. Lyssnaren och timern (`async_call_later`) lever bara under
+väntefönstret – `_start_plug_wait()`/`_reevaluate_plug_detection()`/`_cancel_plug_wait()`.
+
+**Notis:** se "Bilvals-notis (Feature 10)" under Notiser ovan.
+
+**Användarens val:** `on_vehicle_chosen_by_user(vehicle)` avbryter väntan, sätter
+`_last_detection_reason`, rensar båda vals-notiserna och sätter `_vehicle_manually_chosen`
+**om** kabeln inte är urkopplad just då (`connector_status != "Available"`) – ett tryck på en
+kvarliggande notis efter urkoppling ska inte tysta nästa kabelsessions identifiering, eftersom
+inget rensar flaggan innan nästa `Preparing` (inga OCPP-uppdateringar utan kabel).
+
+**Återställning:** `_reset_vehicle_selection()` (kabel ur i `_check_notify_events`, `async_stop`,
+unload) avbryter timer/lyssnare, rensar båda notiserna och nollställer `_vehicle_manually_chosen`
++ `_selection_notified`.
+
+**Config flow:** `plug_entity` valfritt fält på alla tre lagringsställen (config add, options
+add, options edit), måste börja med `binary_sensor.` eller vara tomt (`plug_entity_invalid`),
+delad valideringshjälpare `_plug_entity_error()`. Fältet har medvetet **ingen** `default=` utan
+`description={"suggested_value": ...}` – med `default=` återinjicerar voluptuous det sparade
+värdet när frontend utelämnar ett tömt fält, så en sparad sensor skulle aldrig gå att ta bort
+(samma lärdom som `syslog_host`, Feature 9).
+
+**Kända begränsningar:** sensorn visar "inkopplad någonstans", inte i just den här laddaren –
+en förbättring vore att kombinera med `device_tracker` (`PRESENCE_ENTITIES`). Molnsensorer kan
+ligga efter i tiden (observerat live 2026-09-22: OCPP-SoC-fallbacken matchade fel bil när Kians
+molnsensor inte hunnit ikapp inom 60 s – notisen bad då korrekt användaren välja). Inget
+väntetillstånd persisteras över en HA-omstart. Ett tidigare bilbyte armerar fortfarande Bug
+41-flaggan (`_vehicle_switch_pending_reset`) som vanligt – ett plugg-sensor-match räknas som
+ett bilbyte precis som ett SoC-match gjorde innan, oförändrat sedan Bug 41.
+
+**Tester** (rot-venv, `tests/coordinator_harness.py`-mönstret): `tests/test_feature10_detection.py`
+(beslutstabellen, ren funktion), `tests/test_feature10_notifier.py` (notiserna),
+`tests/test_feature10_config_flow.py` (config/options-flowet + strängar),
+`tests/test_feature10_coordinator.py` (väntefönster, städning, användarens val, bugfixen ovan).
+
+**Live-verifierat 2026-09-22** (Kia e-Niro anslöts): scenario "ingen sensor slår om inom
+väntetiden" (båda `off`, notis `none_plugged` efter 60 s, SoC-fallbacken matchade fel bil –
+förväntat, inte en Feature 10-bugg) och "användarens val vinner" (tryck på Kia → `[Vehicle]
+Switched to Kia eNiro`, `Active Vehicle`-entiteten bekräftar bytet). Scenario 1/2 (direkt match)
+och 12 (väntetidsändring) ännu inte observerade live.
 
 ## Testinstans
 | Parameter | Värde |

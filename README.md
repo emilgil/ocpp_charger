@@ -27,7 +27,7 @@ En Home Assistant custom component som fungerar som OCPP 1.6 Central System. Lad
 ## Installationsguiden (4 steg)
 
 1. **Anslutning** – Port (standard 9000), laddbox-ID, max ström och antal faser
-2. **Fordon** – Batteristorlek, SOC-sensor och enhet (% eller kWh)
+2. **Fordon** – Batteristorlek, SOC-sensor och enhet (% eller kWh), samt valfri inkopplad-sensor för automatisk bilidentifiering
 3. **Priser** – Välj din prisintervall-entitet
 4. **Notiser** – Välj notificationstjänst och vilka händelser du vill ha notiser för
 
@@ -110,6 +110,19 @@ Helpern nollställs automatiskt till `00:00` när kabeln kopplas ur.
 - **Override Current** – Manuell strömgräns vid schema-override
 - **Price Cap** – Pristak i öre/kWh för Smart-läget (0 = av, ladda alla intervall under taket)
 
+## Bilidentifiering
+
+Har du flera fordon kan varje bil få en valfri **inkopplad-sensor** (en `binary_sensor` som
+visar `on` när just den bilen är ansluten någonstans, t.ex. från bilens egen app-integration).
+Den används som primär identifiering vid kabelanslutning i stället för att gissa på SOC – klart
+säkrare när två bilars batterinivåer råkar ligga nära varandra.
+
+Kan sensorerna inte avgöra saken (ingen visar inkopplad, flera visar inkopplad, eller någon bil
+saknar sensor) väntar integrationen upp till en konfigurerbar tid (**Edit vehicle detection
+settings** i integrationsalternativen, standard 60 sekunder) och frågar dig sedan i en notis
+vilken bil som laddar. Under tiden ligger den gamla SOC-baserade gissningen kvar som fallback,
+så laddningen väntar aldrig på ditt svar.
+
 ## Notiser
 
 Notiser skickas max en gång per session för varje händelse:
@@ -117,6 +130,7 @@ Notiser skickas max en gång per session för varje händelse:
 - Kabel inkopplad
 - Laddning startad (med SOC, ström och beräknad klar-tid)
 - Laddning avslutad (med laddad energi, kostnad och tid)
+- Vilken bil som laddar (om inkopplad-sensorerna inte kan avgöra det själva, se "Bilidentifiering" ovan)
 
 Det gäller även över en omstart av Home Assistant: startar HA om mitt i en laddning skickas inte "Laddning startad" en gång till,
 och den planerade starttiden behålls.

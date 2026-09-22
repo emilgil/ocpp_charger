@@ -1,5 +1,106 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-09-22: Feature 10 – Bilidentifiering via inkopplad-sensor per bil (+ bugfix: on_cable_connected-notisens vals-knappar rensades aldrig)
+
+**Bakgrund:** Automatisk bilidentifiering (`vehicle_detection.identify_vehicle`) gissar vilken bil
+som är inkopplad via SoC-matchning – lägst avvikelse mellan boxens OCPP-SOC och bilarnas
+SOC-entiteter, sedan lägst SOC, sedan första bilen. Kan bli fel när två bilars batterinivåer
+ligger nära varandra.
+
+**Funktion:** varje fordon kan få en valfri **"inkopplad"-sensor** (`plug_entity`, en
+`binary_sensor`, `on` = inkopplad). Ny ren funktion `identify_by_plug_sensor()` i
+`vehicle_detection.py` kör en beslutstabell vid `Available → Preparing` (samma villkor som
+tidigare: auto-detektering på, minst 2 bilar): exakt en bil `on` och alla bilar täckta → match;
+ingen sensor konfigurerad → oförändrad SoC-logik; annars (flera `on`, ofullständig täckning,
+eller ingen `on` efter ett konfigurerbart väntefönster på standard 60 s) skickas en notis som
+frågar användaren, med SoC-logiken som fallback under tiden så laddningen aldrig väntar på
+svaret. `identify_vehicle` (SoC) är helt oförändrad – ingen ändring i planeraren, laddlogiken
+eller SoC-uppskattningen. Fullständig beskrivning: se `CLAUDE.md` § "Bilidentifiering via
+inkopplad-sensor (Feature 10)".
+
+**Avvikelser från specen** (dokumenterade i planen, en verifierad mot riktig HA-kod):
+- `plug_entity`-fältet i config/options-flowet har **ingen** `default=` utan
+  `description={"suggested_value": ...}` – med `default=` återinjicerar voluptuous det sparade
+  värdet när frontend utelämnar ett tömt fält (verifierat mot riktig voluptuous), så en sparad
+  sensor skulle aldrig gå att ta bort. Samma lärdom som Feature 9:s `syslog_host`.
+- Städning vid kabelurkoppling ligger i den event-drivna `_check_notify_events`
+  (`Available`-grenen), inte i den poll-drivna `_check_vehicle_auto_detect` – mer pålitlig hook,
+  körs på varje OCPP-uppdatering.
+- `plug_wait_seconds` läses från `entry.data` (inte den cachade `self.config`) vid varje
+  anslutning, så en options-ändring gäller nästa kabelsession utan omstart.
+
+| Fil | Ändring |
+|-----|---------|
+| `const.py` | +`VEHICLE_PLUG_ENTITY`, `CONF_PLUG_WAIT_SECONDS`, `DEFAULT_PLUG_WAIT_SECONDS`, `PLUG_STATE_ON/OFF`, `PLUG_OUTCOME_*`, `PLUG_REASON_*`, `NOTIFY_TAG_VEHICLE_SELECT` |
+| `vehicle_detection.py` | Ny `PlugDetection`-dataklass + `identify_by_plug_sensor()`. `identify_vehicle` byte-för-byte oförändrad |
+| `notifier.py` | Nya `on_vehicle_selection_needed()` + `clear_vehicle_selection_notification()` |
+| `config_flow.py` | `plug_entity`-fält på alla tre lagringsställen (config add, options add, options edit) + delad validator `_plug_entity_error()`; ny options-meny "🔎 Edit vehicle detection settings" (`edit_detection`-steg) |
+| `strings.json`, `translations/sv.json` | Etikett/beskrivning för `plug_entity` (×3), felet `plug_entity_invalid`, `edit_detection`-steget |
+| `__init__.py` | 4 nya koordinatorfält, `_identify_vehicle_on_connect()` + hjälpmetoder (väntefönster, städning), `on_vehicle_chosen_by_user()`, en rad i notis-åtgärdshanteraren |
+
+**Tester** (rot-venv, `tests/coordinator_harness.py`-mönstret): `tests/test_feature10_detection.py`
+(10, beslutstabellen), `tests/test_feature10_notifier.py` (11 efter bugfixen nedan),
+`tests/test_feature10_config_flow.py` (15, flowet + strängar), `tests/test_feature10_coordinator.py`
+(28 efter bugfixen nedan, väntefönster/städning/användarval). Utvecklat via subagent-driven
+development (fem tasks, egen implementerare + task-review per task, bred slutreview över hela
+grenen) – planen validerades dessutom mekaniskt mot en scratch-kopia innan körning (RED/GREEN-
+antal och åtta mutationstester). Slutreviewen (opus) hittade två verkliga fynd före deploy:
+en väntefönster-callback utan testat `@callback`-skydd (tre rader, fixat) och att ett tryck på
+en kvarliggande notis medan kabeln är ur inte får armera `_vehicle_manually_chosen` (annars
+tystas hela nästa kabelsessions identifiering) – fixat med samma snävare vakt som slutligen
+användes i produktion.
+
+**Deploy 2026-09-22 06:20** (`const.py`, `config_flow.py`, `vehicle_detection.py`, `__init__.py`,
+`notifier.py`, `strings.json`, `translations/sv.json`; full HA-omstart, kabeln urkopplad). Inga
+WARNING/ERROR/Traceback i loggarna, Bug 44/45/46-omstartsvägen fungerade som vanligt.
+
+**Live-verifiering 2026-09-22 ~16:42–16:47** (Kia e-Niro anslöts, båda inkopplad-sensorerna
+konfigurerade sedan tidigare samma dag – sparade värden bekräftade i `.storage/core.config_entries`):
+- **Scenario "ingen sensor slår om inom väntetiden":** båda sensorerna visade `off` (Kians
+  molnsensor hann inte ikapp inom 60 s – bekräftat kvar på `off` timmar senare). Väntade 60 s,
+  notis `none_plugged` skickad. SoC-fallbacken matchade under tiden fel bil (Enyaq, av en
+  slump samma SOC som boxens OCPP-avläsning) – förväntat beteende (SoC-logiken är oförändrad),
+  inte en Feature 10-bugg; notisen bad korrekt användaren rätta till det.
+- **Scenario "användarens val vinner":** tryck på "Kia eNiro" i notisen → `[Vehicle] Switching
+  Skoda Enyaq → Kia eNiro` → `[Vehicle] Switched to Kia eNiro` → notisen rensad. `Active
+  Vehicle`-entiteten bekräftade bytet.
+- Scenario 1/2 (direkt sensor-match) och 12 (väntetidsändring gäller nästa session) inte ännu
+  observerade live.
+
+**Bugfix (samma dag, upptäckt under live-verifieringen ovan):** användaren fick BÅDA notiserna
+(den nya vals-notisen och den befintliga "🔌 Laddkabel inkopplad", som redan innan Feature 10
+skickade samma fordonsknappar när fler än en bil är registrerad) och rapporterade att inget
+hände vid ett tryck. Loggen visade att valet faktiskt gick igenom korrekt (`[Vehicle] Switched
+to Kia eNiro`) – roten var att `on_cable_connected`s notis (tag `ocpp_cable_connected`) aldrig
+haft en rensningsmetod: `grep -rn "ocpp_cable_connected"` gav exakt en träff (sändstället) i
+hela kodbasen. Den blev liggande kvar tills nästa kabelsessions kopia (samma tagg) skrev över
+den, timmar senare – en pre-Feature-10-bugg som Feature 10 gjorde synlig genom att lägga till en
+andra, konkurrerande fråge-notis för samma syfte.
+
+Åtgärd: ny konstant `NOTIFY_TAG_CABLE_CONNECTED` (ersätter en bokstavlig sträng i
+`on_cable_connected`), ny `notifier.dismiss_cable_connected_notification()` (speglar
+`dismiss_next_day_shift_notification()`), anropad ovillkorligt från både
+`on_vehicle_chosen_by_user()` (frågan är besvarad oavsett vilken av de två notiserna som
+faktiskt trycktes på) och `_reset_vehicle_selection()` (kabel ur/stopp/unload). 5 nya tester
+(3 notifier, 2 koordinator), TDD (RED bekräftat: notifier 8p/3f, koordinator 26p/2f → GREEN
+11/11 respektive 28/28), scoped code review (sonnet) före omdeploy: 0 Critical/Important.
+
+**Deploy 2026-09-22 20:48** (samma tre filer som berörs: `const.py`, `notifier.py`,
+`__init__.py`; full HA-omstart, kabeln redan urkopplad – ingen laddning pågick). Live-bekräftat:
+`[Notify] Cleared cable-connected notification` avfyrades vid nästa `Available`-övergång direkt
+efter omstarten, exakt som avsett. Bug 44/45/46-omstartsvägen fungerade igen (aktivt fordon Kia
+eNiro bevarat).
+
+**Kända begränsningar:**
+- Sensorn visar "inkopplad någonstans", inte specifikt i den här laddaren – en förbättring vore
+  att kombinera med `device_tracker` (`PRESENCE_ENTITIES` finns redan).
+- Molnsensorer kan ligga efter i tiden – bekräftat live (Kians sensor hann inte ikapp inom 60 s).
+  Ingen garanti, bara en väntetid.
+- Inget väntetillstånd persisteras över en HA-omstart mitt i väntefönstret.
+- Ett plugg-sensor-match räknas fortfarande som ett bilbyte och armerar Bug 41-flaggan
+  (`_vehicle_switch_pending_reset`) precis som ett SoC-match gjorde innan – oförändrat, inte
+  observerat som ett problem live än.
+
 ## 2026-09-21: Bug 47 – Manuell start satte prisskalad ström (11 A) som skrev över 16 A
 
 **Symptom:** Laddningen gick med ca 7,4 kW (11 A per fas) i stället för 11 kW (16 A) hela sessionen 21/9 kl 15:12–16:17, trots att schemat loggade
