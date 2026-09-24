@@ -691,7 +691,8 @@ höjd till 90 s av Feature 10c, se ovan.)
 laddade. **Inte ännu live-verifierad**: ingen bil kunde kopplas in vid deploytillfället, så
 själva väckningsanropet (`button.press`/`kia_uvo.force_update` faktiskt triggas, Skodan svarar
 snabbare än de tidigare 60 s) är obekräftat – koden är inert tills nästa riktiga väntefönster
-(`|P|=0`) uppstår vid en kabelanslutning.
+(`|P|=0`) uppstår vid en kabelanslutning. Den är dessutom inert för en bil som saknar
+`wake_action`: live-konfigen hade inget satt på någon bil förrän 2026-09-24 (se Bug 48 nedan).
 
 ### Väckning vid laddstopp (Bug 48)
 Stopp-notisen ("Laddning avslutad") kunde visa en inaktuell batterinivå när det var **Skoda
@@ -706,14 +707,25 @@ lista på ett enda fordon – ingen dubblerad dispatch-logik) riktar väckningen
 `self.active_vehicle` via dess `wake_action`. Båda hårdkodade anropsställena ersatta. Bygger på
 Feature 10c ovan (`VEHICLE_WAKE_ACTION` måste finnas) – kunde inte implementeras separat före den.
 
+**Kräver konfiguration – ingen automatisk Kia-väckning längre:** en bil utan `wake_action` väcks
+inte alls vid laddstopp, **inte heller Kia**, som tidigare alltid fick `kia_uvo.force_update`.
+Kia måste ha `wake_action = kia_uvo.force_update` och Enyaq `button.skoda_enyaq_wake_up_car`
+inställt i alternativen (satta i live 2026-09-24 ca 21:25 lokal tid; innan dess var fixen en
+no-op för båda – se CHANGELOG "Rättelse 2026-09-24"). Nya bilar behöver samma inställning.
+De 60 s väntan innan SoC läses är oförändrad. Kontrollera live-konfigen (`core.config_entries`)
+innan kod som beror på nya per-bil-fält deployas.
+
 **Tester:** `tests/test_bug48.py` (8 tester, rot-venv/`coordinator_harness.py`-mönstret) –
 `_wake_active_vehicle()` mot rätt bil/inget fordon/fordon utan `wake_action`-nyckel, samt
-regressionstester på båda anropsställena (Enyaq väcks via `button.press`, Kia fortsatt via
-`kia_uvo.force_update`).
+regressionstester på båda anropsställena (Enyaq väcks via `button.press`; Kia via
+`kia_uvo.force_update` när dess `wake_action` är satt).
 
 **Deployad 2026-09-22 21:56** – ren omstart, inga fel, 41 entiteter laddade. **Inte ännu
-live-verifierad**: kräver ett riktigt laddstopp med Enyaq som aktiv bil för att bekräfta att
-`button.press` faktiskt triggas i stopp-flödet.
+live-verifierad**: kabel-ur ska ge `[VehicleDetect] Väcker Skoda Enyaq via
+button.skoda_enyaq_wake_up_car` (prefixet är `[VehicleDetect]`, inte `[Bug48]`). Vid kabel-ur
+avbryts den fördröjda stopp-notisen av Bug 12-vakten ("cable ej ansluten"), så en färsk SoC
+*i notisen* kan bara verifieras på en session som slutar av sig själv utan plan framåt
+(`_check_notify_events()`s stopp-gren).
 
 ## Testinstans
 | Parameter | Värde |

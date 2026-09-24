@@ -16,21 +16,40 @@ som den återanvänder med en lista på ett enda fordon – ingen dubblerad disp
 väckningen mot `self.active_vehicle` via dess `wake_action`. Bygger på Feature 10c ovan;
 kan inte implementeras separat före den (`VEHICLE_WAKE_ACTION` måste finnas).
 
+**Kräver konfiguration – ingen automatisk Kia-väckning längre:** stopp-väckningen styrs nu helt
+av bilens `wake_action`. En bil utan `wake_action` väcks inte alls – **inte heller Kia**, som
+tidigare alltid fick `kia_uvo.force_update`. För att behålla det beteendet måste Kia ha
+`wake_action = kia_uvo.force_update` (och Enyaq `button.skoda_enyaq_wake_up_car`) inställt i
+integrationens alternativ. De 60 s väntan innan SoC läses är oförändrad.
+
 | Fil | Ändring |
 |-----|---------|
 | `__init__.py` | Ny `_wake_active_vehicle()`; de två `kia_uvo.force_update`-anropen ersatta; docstring i `_send_stop_notification()` uppdaterad |
 
 **Tester:** ny `tests/test_bug48.py` (8 tester) – `_wake_active_vehicle()` riktar sig mot rätt
 bil/inget fordon/fordon utan `wake_action`-nyckel, samt regressionstester på båda
-anropsställena (Enyaq väcks via `button.press`, Kia fortsatt via `kia_uvo.force_update`, ingen
-regression). Full svit grön (286 tester).
+anropsställena (Enyaq väcks via `button.press`; Kia via `kia_uvo.force_update` **när dess
+`wake_action` är satt**). Full svit grön (286 tester).
 
 **Deploy 2026-09-22 21:56** (`__init__.py`; full HA-omstart, kabeln urkopplad). Rent: inga
 WARNING/ERROR/Traceback i `home-assistant.log` eller `ocpp_charger_debug.log`, alla 41
-entiteter laddade. **Inte ännu live-verifierat**: kräver ett riktigt laddstopp med Enyaq som
-aktiv bil för att bekräfta att `button.press` faktiskt triggas i stopp-flödet (Kias
-`kia_uvo.force_update`-väg är beteendemässigt oförändrad, så den delen är redan implicit
-verifierad av produktionshistoriken).
+entiteter laddade.
+
+**Rättelse 2026-09-24:** den ursprungliga texten här påstod att Kias väg var "beteendemässigt
+oförändrad". Det stämde bara med `wake_action` satt – och live-konfigen hade **inget**
+`wake_action` på någon bil vid deploy (bekräftat i `core.config_entries`; ingen `Väcker`-rad
+i Graylog sedan deployen). Fixen var alltså en no-op för båda bilarna och Kia förlorade sin
+gamla väckning fram till 2026-09-24 ca 21:25 lokal tid, då `kia_uvo.force_update` (Kia) och
+`button.skoda_enyaq_wake_up_car` (Enyaq) sattes. Under den tiden skickades ingen
+stopp-notis (Graylog: inga "Avslutad"-notiser efter deployen; stopp-notisen hölls inne av
+planen 09-24 02:38 UTC och sessionen ligger kvar öppen), så ingen notis hann få en äldre SoC
+p.g.a. luckan.
+
+**Inte ännu live-verifierat:** kabel-ur (`_send_stop_notification()`) ska ge
+`[VehicleDetect] Väcker Skoda Enyaq via button.skoda_enyaq_wake_up_car` i loggen (prefixet är
+`[VehicleDetect]`, inte `[Bug48]`). Vid kabel-ur avbryts den fördröjda stopp-notisen av
+Bug 12-vakten ("cable ej ansluten"), så en färsk SoC *i notisen* kan bara verifieras på en
+session som slutar av sig själv utan plan framåt (`_check_notify_events()`s stopp-gren).
 
 ## 2026-09-22 (kväll): Feature 10c – väckning av bilen vid väntefönstret (`wake_action`)
 

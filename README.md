@@ -128,7 +128,8 @@ när en sådan väntan börjar – många bil-appar rapporterar inget förrän n
 en button-entitet (t.ex. MySkodas "Wake up car") eller en tjänst i formen `domän.tjänst` (t.ex.
 `kia_uvo.force_update`). Samma väckningsåtgärd körs också för den bil som just laddat klart,
 innan "Laddning avslutad"-notisen skickas, så batterinivån i notisen är färsk oavsett vilken bil
-det gäller.
+det gäller. Bilar utan väckningsåtgärd väcks inte alls – ange den för varje bil (även Kia) om du
+vill ha färsk batterinivå i notisen.
 
 ## Notiser
 
