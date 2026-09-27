@@ -161,8 +161,14 @@ Omval av **samma** bil (`set_active_vehicle()` med samma namn) rör inte Bug 40-
 som `_vehicle_switch_pending_reset`/`_session_total_kwh`-nollningen redan var villkorad. Bug 40:s
 grundbeteende (skydda en giltig plan för idag mot tyst hopp till imorgon, samma fordon) är oförändrat.
 Bug 28 (`_session_plan_intervals`) och Feature 3 (`_rebuild_charge_windows`, som redan tål
-`charge_plan = None`) berörs inte. **Live-verifiering** av själva fixen (nytt bilbyte, grafen ska visa
-den nya bilens fönster direkt) återstår.
+`charge_plan = None`) berörs inte.
+
+**Deployad 2026-09-27 22:10** (PR #34, `__init__.py` + `charge_planner.py` via `scp`, `ha core restart`)
+– ren omstart, inga fel i `ocpp_charger_debug.log` eller `home-assistant.log`, Bug 45-återanslutningen
+gick som väntat (`Preparing är första kända status efter omstart`). **Live-verifiering av själva
+fixen återstår**: kabeln satt i Skoda (inte Kia) vid deploytillfället, så nästa riktiga bilbyte ska
+visa Laddfönster-grafen byta till den nya bilens fönster direkt, utan en `Bug 40: nytt fönster ...
+behåller dagens plan`-rad när den avgående bilens plan redan hade passerat.
 
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
