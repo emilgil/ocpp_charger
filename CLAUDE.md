@@ -126,7 +126,43 @@ Rör varken `_cable_was_available`/`Available`-hanteringen (Bug 13A/38, oförän
 Bug 33/Fix 7:s legitima ackumulering inom samma bils session.
 
 ### Dag-till-nästa-dag-hopp-vakt (Bug 40)
-Kompletterar Bug 28 för fasen **innan** en session startat (kabel inkopplad, väntar på fönstret). När morgondagens priser publiceras utökar `compute_deadline()` (helg/`allow_day_charging`-grenen) horisonten ett helt dygn, och `plan_cheapest_window()` kan då skjuta upp dagens redan valda fönster ett dygn för en försumbar besparing – loggen visar bara `%H:%M` så det ser ut som att fönstret försvann. `is_next_day_shift(prev_plan, new_plan, now_local, local_tz, *, cable_connected)` (ren funktion i `charge_planner.py`, testad i `tests/test_bug40.py`) upptäcker hoppet: förra planen börjar **idag**, båda feasible, kabel inkopplad, och nya fönstrets start-dag ligger **efter förra planens *slut*-dag** (slut- inte start-dag → en vardagsnatt som glider "22:00 idag"→"02:00 imorgon" före samma 06:00-deadline räknas inte). Vid hopp håller `_update_charge_plan()` kvar `prev_plan` och skickar `on_next_day_shift_choice`-notisen (knappar 🔌 Ladda idag / ⏳ Vänta till imorgon) **en gång**. `_next_day_shift_hold` (sticky för kalenderdygnet, speglar `_day_charging_dismissed`-mönstret) håller planen utan att spamma tills användaren svarar / hoppet upphör / kabel ur / midnatt. `KEEP_TODAY` låser hållet; `WAIT_TOMORROW` byter in `_next_day_shift_candidate` direkt om ingen laddning pågår, annars sätts `_next_day_shift_accepted` och den nya planen tas i bruk först när den aktiva sessionen avslutats naturligt (mål / kabel ur / prishål) – en notisknapp får aldrig avbryta pågående laddning (Bug 28). Alla tre flaggor nollställs i `Available`-blocket. Pristaksläget (Feature 5) returnerar före vakten och berörs inte.
+Kompletterar Bug 28 för fasen **innan** en session startat (kabel inkopplad, väntar på fönstret). När morgondagens priser publiceras utökar `compute_deadline()` (helg/`allow_day_charging`-grenen) horisonten ett helt dygn, och `plan_cheapest_window()` kan då skjuta upp dagens redan valda fönster ett dygn för en försumbar besparing – loggen visar bara `%H:%M` så det ser ut som att fönstret försvann. `is_next_day_shift(prev_plan, new_plan, now_local, local_tz, *, cable_connected)` (ren funktion i `charge_planner.py`, testad i `tests/test_bug40.py`) upptäcker hoppet: förra planen börjar **idag**, båda feasible, kabel inkopplad, och nya fönstrets start-dag ligger **efter förra planens *slut*-dag** (slut- inte start-dag → en vardagsnatt som glider "22:00 idag"→"02:00 imorgon" före samma 06:00-deadline räknas inte). Vid hopp håller `_update_charge_plan()` kvar `prev_plan` och skickar `on_next_day_shift_choice`-notisen (knappar 🔌 Ladda idag / ⏳ Vänta till imorgon) **en gång**. `_next_day_shift_hold` (sticky för kalenderdygnet, speglar `_day_charging_dismissed`-mönstret) håller planen utan att spamma tills användaren svarar / hoppet upphör / kabel ur / midnatt. `KEEP_TODAY` låser hållet; `WAIT_TOMORROW` byter in `_next_day_shift_candidate` direkt om ingen laddning pågår, annars sätts `_next_day_shift_accepted` och den nya planen tas i bruk först när den aktiva sessionen avslutats naturligt (mål / kabel ur / prishål) – en notisknapp får aldrig avbryta pågående laddning (Bug 28). Alla tre flaggor nollställs via `_reset_next_day_shift()` (Bug 49) i `Available`-blocket. Pristaksläget (Feature 5) returnerar före vakten och berörs inte.
+
+### Bug 40-hållet överlevde fordonsbyte och passerade planer (Bug 49)
+Upptäckt live 2026-09-27: Skoda laddade klart (95 %, mål nått), kabeln flyttades till Kia ~15:58–15:59.
+Bilbytet detekterades korrekt (plug-sensor, Feature 10), men Laddfönster-grafen visade Skodans redan
+passerade fönster (`14:00–15:00`) i **8+ timmar** – tills midnatt löste det av sig självt. Auto-start
+för Kia triggade aldrig; sessionen kördes helt manuellt (Start/Stopp-knapparna 16:05/17:08).
+
+Tre brister samverkade, alla i `prev_plan = self.charge_plan` (raden precis före
+`is_next_day_shift()`-anropet i `_update_charge_plan()`):
+1. **`self.charge_plan` överlevde kabelurkoppling** – Available-blocket nollställde de tre
+   `_next_day_shift_*`-flaggorna men rörde aldrig `self.charge_plan` självt.
+2. **`set_active_vehicle()` rörde inte planen alls** – ett genuint bilbyte nollställer
+   `_session_total_kwh` men lämnade `charge_plan`/Bug 40-flaggorna kvar från förra bilen, så
+   `is_next_day_shift()` jämförde två helt olika fordons planer med varandra.
+3. **`is_next_day_shift()` kollade bara kalenderdatum, inte klockslag** – `prev_plan.end` som
+   kalenderdatum var fortfarande "idag" även efter att fönstret redan tagit slut (15:00 när klockan
+   var 15:59), så en plan utan en minut kvar skyddades likt en giltig.
+
+Fixat på tre ställen:
+- `charge_planner.is_next_day_shift()` returnerar nu `False` direkt om `prev_plan.end` (lokal tid)
+  redan ligger ≤ `now_local` – en plan som redan är slut har inget kvar att skydda. Regressionstester
+  i `tests/test_bug40.py` (`test_bug49_already_ended_prev_plan_is_not_a_shift`,
+  `test_prev_plan_not_yet_ended_still_a_shift`).
+- Ny delad hjälpmetod `_reset_next_day_shift(reason)` (nollställer `_next_day_shift_hold/_candidate/
+  _accepted` + stänger en väntande notis) – används av både `Available`-blocket och
+  `set_active_vehicle()`s genuina bytesgren.
+- `set_active_vehicle()` och `Available`-blocket sätter nu även `self.charge_plan = None` vid ett
+  genuint bilbyte respektive urkoppling, så `prev_plan` alltid är `None` (→ garanterat ingen falsk
+  träff) i stället för föregående vehikels/sessionens plan.
+
+Omval av **samma** bil (`set_active_vehicle()` med samma namn) rör inte Bug 40-tillståndet, precis
+som `_vehicle_switch_pending_reset`/`_session_total_kwh`-nollningen redan var villkorad. Bug 40:s
+grundbeteende (skydda en giltig plan för idag mot tyst hopp till imorgon, samma fordon) är oförändrat.
+Bug 28 (`_session_plan_intervals`) och Feature 3 (`_rebuild_charge_windows`, som redan tål
+`charge_plan = None`) berörs inte. **Live-verifiering** av själva fixen (nytt bilbyte, grafen ska visa
+den nya bilens fönster direkt) återstår.
 
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
