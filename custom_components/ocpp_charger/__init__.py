@@ -1758,6 +1758,13 @@ class OCPPCoordinator(DataUpdateCoordinator):
             # e.g. because the cable was never truly unplugged between vehicles), that
             # branch must not blindly re-accumulate the old vehicle's stale energy.
             self._vehicle_switch_pending_reset = True
+            # Bug 49: the outgoing vehicle's plan (and any Bug 40 "keep today's plan"
+            # hold built from it) must not survive into the new vehicle's planning –
+            # comparing two different vehicles' plans in is_next_day_shift() is
+            # meaningless and previously froze the charge window on the old vehicle's
+            # already-elapsed plan for hours (see claude_bug49.md).
+            self._reset_next_day_shift("bilbyte")
+            self.charge_plan = None
         self.active_vehicle = vehicle
         self.battery_capacity_kwh = float(vehicle.get(VEHICLE_CAPACITY, DEFAULT_BATTERY_CAPACITY_KWH))
         self.soc_entity = vehicle.get(VEHICLE_SOC_ENTITY, "")
@@ -1934,11 +1941,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._charging_started_at = None  # Bug 34: nollställ fryst starttid vid urkoppling
             self._session_plan_intervals = None  # Bug 28: clear frozen plan on cable disconnect
             # Bug 40: clear next-day-shift choice state on cable disconnect
-            if self._next_day_shift_hold:
-                self.notifier.dismiss_next_day_shift_notification()
-            self._next_day_shift_hold = False
-            self._next_day_shift_candidate = None
-            self._next_day_shift_accepted = False
+            self._reset_next_day_shift("urkoppling")
             self._reset_vehicle_selection()  # Feature 10: cable out ends the wait window, the notification and a manual choice
             self._session_total_kwh = 0.0  # Fix 7: reset accumulated energy
             self._cable_session_notified_connect = False  # Fix 9: reset connect-notif flag
@@ -1955,6 +1958,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._price_cap_intervals = []
             self._price_cap_raw_slots = []
             self._last_plan_update = None    # Feature 5/6: force re-plan with automatic deadline
+            self.charge_plan = None          # Bug 49: förra sessionens plan får inte bli nästa bils "dagens plan"
             self.hass.async_create_task(self._save_state())  # Feature 5: persist the clear
             _LOGGER.debug("[Bug13A] Available → cable_was_available=True")
 
@@ -2175,6 +2179,20 @@ class OCPPCoordinator(DataUpdateCoordinator):
         if elapsed_min >= 5 and not self._notified_disconnect:
             self._notified_disconnect = True
             self.notifier.on_charger_disconnected(elapsed_min)
+
+    def _reset_next_day_shift(self, reason: str) -> None:
+        """Bug 49: nollställ Bug 40-tillståndet och stäng en ev. väntande valnotis.
+
+        Delad av kabelurkoppling (Available) och genuina fordonsbyten
+        (set_active_vehicle()) – båda gör förra bilens/sessionens hållna plan
+        irrelevant för nästa plan som räknas fram.
+        """
+        if self._next_day_shift_hold:
+            self.notifier.dismiss_next_day_shift_notification()
+            _LOGGER.debug("[ChargePlanner] Bug 49: Bug 40-val avbrutet (%s)", reason)
+        self._next_day_shift_hold = False
+        self._next_day_shift_candidate = None
+        self._next_day_shift_accepted = False
 
     def _update_charge_plan(self) -> None:
         """Recalculate the optimal charge window using forecast prices."""

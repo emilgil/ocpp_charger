@@ -78,10 +78,19 @@ def is_next_day_shift(
     to "02:00 tomorrow" before the same 06:00 deadline finishes on the same day
     the new window starts, so it is NOT a shift; a whole-day defer
     (``14:45–16:00`` Sat → ``12:45–14:00`` Sun) is.
+
+    Bug 49: a ``prev_plan`` that has already ended (its ``end`` is at or before
+    ``now_local``) has nothing left to protect – e.g. after a vehicle switch,
+    ``prev_plan`` is the *outgoing* vehicle's already-elapsed window, and
+    comparing it against the new vehicle's freshly computed plan is
+    meaningless. Without this check the hold could freeze the charge window on
+    a plan with zero remaining minutes for the rest of the calendar day.
     """
     if prev_plan is None or new_plan is None:
         return False
     if not (prev_plan.feasible and new_plan.feasible and cable_connected):
+        return False
+    if prev_plan.end.astimezone(local_tz) <= now_local:
         return False
     today = now_local.date()
     prev_start_day = prev_plan.start.astimezone(local_tz).date()

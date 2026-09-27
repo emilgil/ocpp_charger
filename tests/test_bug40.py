@@ -108,6 +108,26 @@ def test_none_or_infeasible_plans_are_not_a_shift():
     ) is False
 
 
+def test_bug49_already_ended_prev_plan_is_not_a_shift():
+    """Bug 49: prev_plan har redan passerat (slutade 15:00, nu är 15:59) – inget
+    kvar att skydda, trots att den nya planen (imorgon) annars skulle räknas
+    som ett hopp. Reproducerar det verkliga fallet: Skodas plan 14:00-15:00
+    idag, Kia kopplas in 15:59, ny plan hamnar imorgon 13:15."""
+    prev = plan(datetime(2026, 9, 26, 12, 0, tzinfo=UTC), datetime(2026, 9, 26, 13, 0, tzinfo=UTC))  # 14:00-15:00 lokal
+    new = plan(datetime(2026, 9, 27, 11, 15, tzinfo=UTC), datetime(2026, 9, 27, 12, 15, tzinfo=UTC))  # imorgon 13:15 lokal
+    now = datetime(2026, 9, 26, 13, 59, tzinfo=UTC)  # 15:59 lokal, prev slutade 15:00
+    assert is_next_day_shift(prev, new, now, UTC, cable_connected=True) is False
+
+
+def test_prev_plan_not_yet_ended_still_a_shift():
+    """Kontroll: samma fönster som ovan men now ligger FÖRE prev.end – hoppet
+    upptäcks fortfarande (regression av grundfallet, bara med explicit tid nu)."""
+    prev = plan(datetime(2026, 9, 26, 12, 0, tzinfo=UTC), datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
+    new = plan(datetime(2026, 9, 27, 11, 15, tzinfo=UTC), datetime(2026, 9, 27, 12, 15, tzinfo=UTC))
+    now = datetime(2026, 9, 26, 12, 30, tzinfo=UTC)  # 14:30 lokal, prev pågår fortfarande (slutar 15:00)
+    assert is_next_day_shift(prev, new, now, UTC, cable_connected=True) is True
+
+
 def test_local_tz_is_applied_to_day_boundaries():
     """Dagsgränsen ska räknas i lokal tid, inte UTC.
 
