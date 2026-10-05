@@ -1,5 +1,33 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-10-05 (kväll): Bug 51 – dagladdningsnotis var 15:e minut med urkopplad kabel
+
+**Symptom:** Från 15:31 kom "Dagladdning är billigare" var 15:e minut, kabeln urkopplad hela tiden
+(dagladdning på via manuell override). Upphörde först när "🚫 Avsluta" slog av dagladdningen 18:53.
+
+**Rotorsak:** följdfel av Bug 49. Garo skickar `StatusNotification Available` var 15:e minut utan
+statusändring, och urkopplingsblocket i `_check_notify_events()` var nivåstyrt – varje upprepning körde
+om hela blocket, inklusive `charge_plan = None` (Bug 49). `prev_plan` var då alltid `None` vid nästa
+planering → dag-notisen gick igen. Dag-grenen i `_update_charge_plan()` saknade dessutom kabelvillkor.
+Samma nollning rensade också `_day_charging_dismissed`, pristak, deadline-helper och manuellt bilval
+var 15:e minut (oupptäckt bieffekt).
+
+**Fix:** (A) `available_edge` – urkopplingsblocket och kabel-ur-stoppnotisen körs bara vid själva
+övergången till `Available` (`_last_connector_status_notify != "Available"`; efter omstart är värdet `""`
+så trigger-svaret räknas som övergång). Upprepad `Available` ger bara `[Bug51] Upprepad Available`.
+(B) Dag-notisen undertrycks när kabeln inte är ansluten (`Dag-notis undertryckt – kabel ej ansluten`).
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `available_edge` i `_check_notify_events()` (två villkor + debug-rad); kabelvillkor före `_day_charging_dismissed` i dag-notisgrenen |
+
+**Tester:** ny `tests/test_bug51.py` (8 tester). Övriga testfiler gröna oförändrade.
+
+**Deploy 2026-10-05 19:19** (`__init__.py`; full HA-omstart, ingen laddning pågick). Rent: 0 fel.
+**Live-verifierat:** 19:30:01 `[Bug51] Upprepad Available – ingen statusändring, hoppar över urkopplingsblocket`,
+ingen `[Bug13A]`-rad, ingen notis. **Ej live-observerat:** fix B (dagladdning är av), äkta urkoppling och
+nästa inkoppling.
+
 ## 2026-10-05: Bug 50 – ingen stoppnotis vid mål nått eller kabel-ur
 
 **Symptom:** Session `97D1F823` natten mot 2026-10-05: målet 95 % nåddes 03:15 och kabeln drogs ur
