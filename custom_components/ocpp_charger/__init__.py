@@ -1970,6 +1970,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._start_notified_this_connection = False  # Bug 2: reset for next connection
             self._day_charging_dismissed = False  # Bug 3: reset for next connection
             self._day_charging_dismissed_until = None  # Bug 21
+            self._day_charging_manual_override = False  # Bug 52: manuell dagladdning gäller bara till urkoppling
+            self._sync_allow_day_charging()
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
             self._goal_reached_stop = False  # Bug 50
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
