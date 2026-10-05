@@ -71,7 +71,11 @@ def make_coordinator(store=None, *, vehicles=VEHICLES):
         "charger_id": "GaroCS-TEST", "port": 9000, "host": "127.0.0.1", "max_current": 16.0,
         "num_phases": "3", "notify_on_connect": True, "vehicles": [dict(v) for v in vehicles],
     }
-    coordinator = cls(hass, entry)
+    # Nyare HA (2026.x): DataUpdateCoordinator.__init__ anropar frame.report_usage() (varning om att config entry
+    # inte skickas med), som kräver en riktig hass/loop. Den rapporten är irrelevant här – tysta den vid bygget.
+    from unittest.mock import patch
+    with patch("homeassistant.helpers.frame.report_usage"):
+        coordinator = cls(hass, entry)
     coordinator._store = store if store is not None else FakeStore()
     return coordinator
 

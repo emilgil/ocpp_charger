@@ -1,5 +1,34 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-10-05: Bug 50 – ingen stoppnotis vid mål nått eller kabel-ur
+
+**Symptom:** Session `97D1F823` natten mot 2026-10-05: målet 95 % nåddes 03:15 och kabeln drogs ur
+07:32, men ingen "Laddning avslutad"-notis skickades alls.
+
+**Rotorsak:** två blockerade vägar. (A) Bug 11-skyddet höll inne notisen när planen hade tid kvar
+(en plan som räknats om mitt i natten slutade 03:45), utan att skilja prishål från "mål nått" – och
+`_was_charging` föll av två sekunder senare så notisen aldrig försöktes igen. (B) Bug 12-kabelkontrollen
+i `_send_stop_notification()._delayed` avbröt alltid kabel-ur-sammanfattningen (kabeln är ju ur).
+
+**Fix:** ny flagga `_goal_reached_stop` (sätts i mål-nått-grenen, nollställs vid ny laddning /
+`Available` / genuin inkoppling) som låter Bug 11-skyddet släppa igenom mål-nått-stopp.
+`_send_stop_notification(from_cable_out=True)` hoppar över kabelkontrollen vid urkoppling, och
+`cable_session_stop_notified` persisteras i Store (gammal Store → "redan skickad" om kabeln var ur)
+så att en omstart med urkopplad kabel inte ger en falsk sammanfattning. En stoppnotis per kabelsession
+som förut.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | `_goal_reached_stop` (init, mål-nått-grenen, tre nollställningar, Bug 11-villkor, loggrad); `from_cable_out`-parameter; Store-nyckel `cable_session_stop_notified` (spara + ladda med migrering) |
+
+**Tester:** ny `tests/test_bug50.py` (16 tester). `tests/test_restart_path.py`-fixturen modellerar nu den
+redan skickade sammanfattningen (`_cable_session_stop_notified = not cable_in`). `tests/coordinator_harness.py`
+tystar `frame.report_usage` (nyare HA). Alla testfiler gröna.
+
+**Deploy 2026-10-05 16:53** (`__init__.py`; full HA-omstart, ingen laddning pågick). Rent: 0 fel, Store fick
+nyckeln (`true`, migrerad), trigger-svarets `Available` gav ingen notis. **Live-verifiering återstår** vid nästa
+laddning till målnivå (se CLAUDE.md, "Bug 50").
+
 ## 2026-09-22 (natt): Bug 48 – SoC-väckningen vid laddstopp riktade sig alltid mot Kia
 
 **Symptom:** Stopp-notisen ("Laddning avslutad") kunde visa en inaktuell batterinivå när det

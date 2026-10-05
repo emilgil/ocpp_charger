@@ -63,6 +63,9 @@ def _store_before_reload(*, cable_in, flag, mid_session=False):
     w = h.make_coordinator(store)
     w.active_vehicle = w._vehicles[1]
     w._cable_session_energy_kwh = 51.25
+    # Bug 50: with the cable out, that session's summary has already gone out (the flag is saved in the Store and
+    # survives the reload) – that's what keeps Available after a restart from giving a false summary.
+    w._cable_session_stop_notified = not cable_in
     w._cable_was_available = flag
     w.ocpp.state.cable_connected = cable_in
     if mid_session:
@@ -120,10 +123,10 @@ def test_late_connecting_charger_answers_available_and_the_next_plug_in_resets_t
         garo.connect()
         await _settle()
         assert c.ocpp.state.connector_status == "Available"     # Bug 45: status blev känd
-        for delay, action in timers:                            # 60 s senare: den fördröjda stopp-notisen
+        for delay, action in timers:                            # 60 s senare: en eventuell fördröjd stopp-notis
             assert delay == 60
-            await action()                                      # ...avbryts, kabeln är fortfarande ur (Bug 12)
-        timers.clear()
+            await action()
+        timers.clear()                                          # (Bug 50: ingen schemaläggs – flaggan är sparad)
         c.notifier.on_charging_stopped.assert_not_called()
         garo.status("Preparing")                                # kabeln kopplas in
 
