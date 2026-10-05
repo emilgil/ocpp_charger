@@ -170,6 +170,34 @@ fixen återstår**: kabeln satt i Skoda (inte Kia) vid deploytillfället, så n�
 visa Laddfönster-grafen byta till den nya bilens fönster direkt, utan en `Bug 40: nytt fönster ...
 behåller dagens plan`-rad när den avgående bilens plan redan hade passerat.
 
+### Stoppnotis uteblev vid mål nått och kabel-ur (Bug 50)
+Session `97D1F823` natten mot 2026-10-05: målet 95 % nåddes 03:15, kabeln drogs ur 07:32 – ingen stoppnotis. Två vägar till notisen var båda blockerade:
+- **A (mål nått):** Bug 11-skyddet i `_check_notify_events()` höll inne notisen om `plan.feasible and now < plan.end`, utan hänsyn till *varför* laddningen stoppade.
+  Planen hade räknats om under natten (Bug 16) och slutade 03:45 – målet nåddes 03:15, så stoppet tolkades som prishål. Och `_was_charging` blev `False`
+  två sekunder senare, så notisen sköts inte upp utan försvann.
+- **B (kabel-ur):** `_send_stop_notification()._delayed` avbröt alltid när `cable_connected` var False (Bug 12) – vid urkoppling alltid sant. Vägen hade aldrig kunnat
+  skicka något sedan Bug 12; det syntes inte eftersom väg A normalt skickade notisen.
+
+**Fix** (`__init__.py`):
+- **A:** `_goal_reached_stop` sätts i mål-nått-grenen i `_update_smart_charging()` precis före `_guarded_remote_stop()`; Bug 11-villkoret fick `and not self._goal_reached_stop`.
+  Nollställs när laddning pågår (`is_charging and power_w > 100`), vid `Available` och vid genuin inkoppling. Loggrad `[Notify] Stopp-notis schemalagd (60s) – orsak=mål nått|plan slut`.
+- **B1:** `cable_session_stop_notified` sparas/återställs i Store (`_save_state()`/`_load_state()`). Migrering: gammal Store utan nyckeln → `not cable_connected`
+  (kabeln ur = "redan skickad"). Ersätter Bug 12:s omstartsfunktion för kabel-ur-vägen: utan den skulle varje omstart med urkopplad kabel ge en falsk sammanfattning
+  (TriggerMessage → `Available` → energi > 0 → notis).
+- **B2:** `_send_stop_notification(from_cable_out=False)`; kabel-ur-anropet i `_check_notify_events()` skickar `from_cable_out=True` och hoppar över kabelkontrollen.
+  `charging`- och `energy_kwh < 0.1`-skydden gäller kvar. SuspendedEV-anropet behåller kabelkontrollen.
+
+Resultat: **en** stoppnotis per kabelsession (oförändrad design). Mål nått → vid stopp (+60 s); prishål → ingen vid pausen, notis vid slutstopp/kabel-ur; redan skickad → ingen
+dubblett vid kabel-ur; omstart med urkopplad kabel → ingen falsk sammanfattning.
+**Tester:** `tests/test_bug50.py` (16, rot-venv). `test_restart_path.py`-fixturen sparar nu `_cable_session_stop_notified = not cable_in` (en urkopplad kabelsessions sammanfattning är redan skickad).
+`coordinator_harness.py` tystar `frame.report_usage` vid bygget (HA 2026.x i rot-venv, som nu är Python 3.14 + `websockets` installerat via `uv`).
+
+**Deployad 2026-10-05 16:53** (`__init__.py` via `scp`, `ha core restart`, ingen laddning pågick): ren omstart, 0 fel i loggarna, Store fick `cable_session_stop_notified: true` (migrerad),
+trigger-svarets `Available` gav ingen `_delayed`/stoppnotis. **Live-verifiering av själva fixen återstår:** nästa laddning till målnivå ska 60 s efter `Mål nått ... stoppar` ge
+`[Notify] Stopp-notis schemalagd (60s) – orsak=mål nått` + push, och kabel-ur efteråt ingen andra notis. Prishålsfallet (`håller inne stopp-notis` → notis vid slutstopp/kabel-ur) är ej observerat.
+**Öppna punkter (ej i fixen):** upprepade `Available` var 15:e minut kör hela Available-blocket om (ofarligt, dedup); väg A-notisens energi är `state.energy_kwh` för *transaktionen*, inte
+kabelsessionen (för låg vid Garo-omstart inom sessionen); väg B-notisens varaktighet är kabeltid, inte laddtid.
+
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
 `Laddfönster`-grafen/`charge_windows`-sensorn Smart-planens billigaste luckor fast bilen laddade direkt
@@ -238,8 +266,8 @@ av integrationen. De hänger ihop och ska förstås tillsammans:
   och state rörs inte. Från kodgranskning, aldrig observerad i loggarna.
 - **Bug 46:** `set_active_vehicle(vehicle, *, restore=False)`. `_load_state()` anropar med `restore=True` (hoppar över bytesblocket: `_session_total_kwh`-nollning och
   `_vehicle_switch_pending_reset`); loggar `[Bug46] Återställer fordon`. Riktiga byten (notisval, auto-detect, select) är oförändrade – Bug 41 gäller kvar.
-- **Samspel:** Bug 44 är skyddsnätet när Garo aldrig svarar på triggern; trigger-svarets `Available` ger ingen falsk stopp-push (Bug 12-vakten i
-  `_send_stop_notification` avbryter när kabeln är ur).
+- **Samspel:** Bug 44 är skyddsnätet när Garo aldrig svarar på triggern; trigger-svarets `Available` ger ingen falsk stopp-push. Sedan Bug 50 är det den
+  sparade `_cable_session_stop_notified` (Store) som hindrar den – Bug 12-kabelkontrollen i `_send_stop_notification` gäller inte längre kabel-ur-vägen.
 - **Tester** (`tests/coordinator_harness.py` = riktig `OCPPCoordinator` med riktig `__init__`, MagicMock-hass; bara Store, hass-tjänster och tid fejkade; körs med
   rot-venv `/mnt/c/temp/github/claude/venv/bin/python`, hoppas över utan HA): `test_bug44.py`, `test_bug45.py`, `test_bug46.py` och `test_restart_path.py`
   (end-to-end: sent ansluten laddare, laddare som aldrig svarar, omstart mitt i en pausad session).
@@ -319,7 +347,8 @@ _notified_stop_session: str | None        # dedup-guard stop
 _cable_session_energy_kwh: float          # ackumulerad energi per kabelsession
 _cable_session_cost_sek: float            # ackumulerad kostnad per kabelsession
 _cable_session_start_notified: bool       # en start-notis per kabelsession
-_cable_session_stop_notified: bool        # en stopp-notis per kabelsession
+_cable_session_stop_notified: bool        # en stopp-notis per kabelsession; Bug 50: persisteras i Store (gammal Store utan nyckel → "redan skickad" om kabeln var ur)
+_goal_reached_stop: bool                  # Bug 50: senaste RemoteStop berodde på mål nått → Bug 11-vakten håller inte inne stopp-notisen; nollställs vid ny laddning/Available/genuin inkoppling
 _cable_session_notified_connect: bool     # Fix 9: en inkopplad-notis per kabelsession
 _session_total_kwh: float                 # Fix 7: ackumulerad energi sedan kabel in
 _suspended_ev_since: datetime | None      # SuspendedEV-detektion
@@ -427,7 +456,7 @@ Tre events, var och en skickas max en gång per session (dedup-guards via sessio
 |----------|---------|
 | `on_cable_connected` | `connector_status == Preparing` |
 | `on_charging_started` | `charging=True` och `power_w > 100` (faktisk ström flödar) |
-| `on_charging_stopped` | `charging=False` efter aktiv laddning |
+| `on_charging_stopped` | `charging=False` efter aktiv laddning (+60 s); hålls bara inne vid prishål (Bug 11), aldrig när målet nåtts (Bug 50). Annars sammanfattning vid kabel-ur om ingen skickats (Bug 50) |
 
 Notiserna är åtgärdbara: `ocpp_use_day_charging` / `ocpp_use_night_charging`.
 
@@ -764,10 +793,10 @@ regressionstester på båda anropsställena (Enyaq väcks via `button.press`; Ki
 
 **Deployad 2026-09-22 21:56** – ren omstart, inga fel, 41 entiteter laddade. **Inte ännu
 live-verifierad**: kabel-ur ska ge `[VehicleDetect] Väcker Skoda Enyaq via
-button.skoda_enyaq_wake_up_car` (prefixet är `[VehicleDetect]`, inte `[Bug48]`). Vid kabel-ur
-avbryts den fördröjda stopp-notisen av Bug 12-vakten ("cable ej ansluten"), så en färsk SoC
-*i notisen* kan bara verifieras på en session som slutar av sig själv utan plan framåt
-(`_check_notify_events()`s stopp-gren).
+button.skoda_enyaq_wake_up_car` (prefixet är `[VehicleDetect]`, inte `[Bug48]`). Före Bug 50
+avbröts den fördröjda stopp-notisen vid kabel-ur alltid av Bug 12-vakten ("cable ej ansluten");
+sedan Bug 50 skickas kabel-ur-sammanfattningen, så en färsk SoC *i notisen* kan nu även
+verifieras vid kabel-ur (om ingen stopp-notis redan skickats i kabelsessionen).
 
 ## Testinstans
 | Parameter | Värde |
