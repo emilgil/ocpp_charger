@@ -195,8 +195,28 @@ dubblett vid kabel-ur; omstart med urkopplad kabel → ingen falsk sammanfattnin
 **Deployad 2026-10-05 16:53** (`__init__.py` via `scp`, `ha core restart`, ingen laddning pågick): ren omstart, 0 fel i loggarna, Store fick `cable_session_stop_notified: true` (migrerad),
 trigger-svarets `Available` gav ingen `_delayed`/stoppnotis. **Live-verifiering av själva fixen återstår:** nästa laddning till målnivå ska 60 s efter `Mål nått ... stoppar` ge
 `[Notify] Stopp-notis schemalagd (60s) – orsak=mål nått` + push, och kabel-ur efteråt ingen andra notis. Prishålsfallet (`håller inne stopp-notis` → notis vid slutstopp/kabel-ur) är ej observerat.
-**Öppna punkter (ej i fixen):** upprepade `Available` var 15:e minut kör hela Available-blocket om (ofarligt, dedup); väg A-notisens energi är `state.energy_kwh` för *transaktionen*, inte
+**Öppna punkter (ej i fixen):** ~~upprepade `Available` var 15:e minut kör hela Available-blocket om (ofarligt, dedup)~~ (visade sig inte ofarligt – åtgärdat i Bug 51); väg A-notisens energi är `state.energy_kwh` för *transaktionen*, inte
 kabelsessionen (för låg vid Garo-omstart inom sessionen); väg B-notisens varaktighet är kabeltid, inte laddtid.
+
+### Upprepad Available + dagnotis utan kabel (Bug 51)
+Garo skickar `StatusNotification Available` var 15:e minut (:00/:15/:30/:45) även utan statusändring.
+Urkopplingsblocket i `_check_notify_events()` var nivåstyrt och körde om allt vid varje upprepning –
+bl.a. `charge_plan = None` (Bug 49), så `prev_plan` blev `None` och dag-notisen (`on_day_charging_chosen`)
+gick var 15:e minut med urkopplad kabel (2026-10-05 15:31–18:53, dagladdning på via Bug 26-override).
+Samma nollning rensade `_day_charging_dismissed`, pristak, deadline-helper och manuellt bilval var kvart.
+- **A (kantdetektering):** `available_edge = status == "Available" and _last_connector_status_notify != "Available"`
+  styr både kabel-ur-stoppnotisen (Bug 50) och urkopplingsblocket (innehållet oförändrat). Upprepad `Available`
+  loggar `[Bug51] Upprepad Available – ingen statusändring, …`. Efter omstart är `_last_connector_status_notify`
+  `""` → trigger-svarets `Available` (Bug 45) räknas som övergång. `_last_connector_status_notify = status` sätts sist i metoden (oförändrat).
+- **B (kabelvillkor):** dag-grenen i `_update_charge_plan()` undertrycker notisen när `cable_connected` är False
+  (`Dag-notis undertryckt – kabel ej ansluten`). Bieffekt: natt-bytet (`charge_plan = night_plan`) ligger i samma `if`
+  och körs inte heller utan kabel; planen räknas om vid inkoppling.
+- **Effekt:** pristak, deadline och manuellt bilval satta med kabel ur ligger kvar till inkoppling + nästa äkta urkoppling;
+  "🚫 Avsluta" gäller till midnatt eller äkta urkoppling (Bug 3/21). Löser öppen punkt 1 under Bug 50.
+- **Tester:** `tests/test_bug51.py` (8, rot-venv).
+- **Deployad 2026-10-05 19:19** (`__init__.py` via `scp`, `ha core restart`, ingen laddning pågick). **Live-verifierat:** 19:30:01 `[Bug51] Upprepad Available`,
+  ingen `[Bug13A]`-rad. **Kvar:** fix B (kräver dagladdning på med kabel ur), äkta urkoppling (`[Bug13A]` en gång + stoppnotis enligt Bug 50) och nästa inkoppling.
+- **Öppen punkt:** manuell dagladdnings-override (Bug 26) sparas för alltid och nollas aldrig vid urkoppling – ej beslutat om den ska nollas vid urkoppling eller midnatt.
 
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade

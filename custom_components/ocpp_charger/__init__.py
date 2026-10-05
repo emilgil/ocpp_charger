@@ -1940,12 +1940,22 @@ class OCPPCoordinator(DataUpdateCoordinator):
         status = state.connector_status or ""
         is_charging = state.charging
 
+        # Bug 51: Garo skickar Available var 15:e minut även när statusen inte ändrats.
+        # Urkopplingslogiken ska bara köras vid själva övergången till Available.
+        # Efter omstart är _last_connector_status_notify "" → första Available (trigger-svaret,
+        # Bug 45) räknas som övergång.
+        available_edge = (
+            status == "Available" and self._last_connector_status_notify != "Available"
+        )
+        if status == "Available" and not available_edge:
+            _LOGGER.debug("[Bug51] Upprepad Available – ingen statusändring, hoppar över urkopplingsblocket")
+
         # ── Cable disconnected → send stop-notif if not already sent (Bug 6) ──
-        if status == "Available" and self._cable_session_energy_kwh > 0:
+        if available_edge and self._cable_session_energy_kwh > 0:  # Bug 51
             self._send_stop_notification(from_cable_out=True)   # Bug 50
 
         # ── Reset _was_charging when cable is disconnected ───────────────
-        if status == "Available":
+        if available_edge:  # Bug 51
             self._was_charging = False
             self._charging_started_at = None  # Bug 34: nollställ fryst starttid vid urkoppling
             self._session_plan_intervals = None  # Bug 28: clear frozen plan on cable disconnect
@@ -2511,6 +2521,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         or not prev_plan.feasible
                         or abs((self.charge_plan.start - prev_plan.start).total_seconds()) > 7200  # Bug 21: 2h, was 900s
                     )
+                if notify and not self.ocpp.state.cable_connected:  # Bug 51
+                    _LOGGER.debug("[ChargePlanner] Dag-notis undertryckt – kabel ej ansluten")
+                    notify = False
                 if notify and not self._day_charging_dismissed:  # Bug 3: respect dismiss
                     # Calculate what night-only plan would cost for comparison
                     night_prices = [
