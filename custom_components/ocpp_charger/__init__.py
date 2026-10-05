@@ -535,6 +535,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._day_charging_dismissed_until: datetime | None = None  # Bug 21: midnight reset
         self._day_offer_notified_date = None  # date of last presence-based day-charging offer
         self._charging_seen_this_session: bool = False  # Bug 10: guard stop-notif at restart
+        self._goal_reached_stop: bool = False  # Bug 50: latest RemoteStop was because the goal was reached
         self._suspended_ev_since: datetime | None = None  # Bug 5: SuspendedEV tracking
         # Bug 38: init False – efter HA-omstart krävs en äkta Available innan Preparing
         # tolkas som genuin inkoppling. True-init gjorde att en omstart under pågående
@@ -688,6 +689,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "total_cost": state.total_cost if state else 0.0,
             "cable_session_energy_kwh": self._cable_session_energy_kwh,
             "cable_session_cost_sek": self._cable_session_cost_sek,
+            "cable_session_stop_notified": self._cable_session_stop_notified,   # Bug 50
             "cable_was_available": self._cable_was_available,   # Bug 44: survive restart
             "session_start_soc": self._session_start_soc,   # Bug 30: SOC estimation baseline
             "session_total_kwh": self._session_total_kwh,   # Bug 30: energy paired with that baseline
@@ -725,6 +727,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.ocpp.state.total_cost = data.get("total_cost", 0.0)
             self._cable_session_energy_kwh = data.get("cable_session_energy_kwh", 0.0)
             self._cable_session_cost_sek = data.get("cable_session_cost_sek", 0.0)
+            # Bug 50: survive a restart so that Available after a restart doesn't give a false summary.
+            # Migration: an old Store lacks the key → assume "already sent" if the cable was out at the
+            # last save.
+            self._cable_session_stop_notified = bool(
+                data.get("cable_session_stop_notified", not self.ocpp.state.cable_connected)
+            )
             # Bug 44: restore the "genuine Available seen" flag. Without it the first Preparing
             # after a restart/reload is classified as a Garo reset and the cable-session
             # accumulators are never cleared (Garo doesn't resend StatusNotification on reconnect,
@@ -1392,6 +1400,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         _LOGGER.info("[SmartCharge] Manual override aktiv, stoppar inte (mål nått men override aktiv)")
                         return
                     _LOGGER.info("[SmartCharge] Mål nått (%s), stoppar", goal_reason)
+                    self._goal_reached_stop = True   # Bug 50
                     self._guarded_remote_stop(now_utc)
                 return
 
@@ -1933,7 +1942,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
         # ── Cable disconnected → send stop-notif if not already sent (Bug 6) ──
         if status == "Available" and self._cable_session_energy_kwh > 0:
-            self._send_stop_notification()
+            self._send_stop_notification(from_cable_out=True)   # Bug 50
 
         # ── Reset _was_charging when cable is disconnected ───────────────
         if status == "Available":
@@ -1952,6 +1961,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._day_charging_dismissed = False  # Bug 3: reset for next connection
             self._day_charging_dismissed_until = None  # Bug 21
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
+            self._goal_reached_stop = False  # Bug 50
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
             self._reset_deadline_helper()    # Feature 6: clear manual deadline on disconnect
             self.price_cap_ore_kwh = 0.0     # Feature 5: clear price cap on disconnect
@@ -2034,6 +2044,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._was_charging = False
             self._start_notified_this_connection = False  # Bug 2: reset for new connection
             self._charging_seen_this_session = False  # Bug 10: reset for new connection
+            self._goal_reached_stop = False  # Bug 50
             self._notified_start_session = None  # allow new start-notif for coming session
             # Reset cost tracking for new session at cable connect.
             # Bug 33: a genuine connect always starts fresh. The old `+=` captured
@@ -2108,6 +2119,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     estimated_end=self.estimated_completion,
                 )
 
+        if is_charging and state.power_w > 100:
+            self._goal_reached_stop = False   # Bug 50: new charging → an old stop reason no longer applies
+
         # ── Charging stopped (Bug 10: guard + delayed 60s for fresh SOC) ─────────
         if (
             self._notify_on_stop
@@ -2127,12 +2141,17 @@ class OCPPCoordinator(DataUpdateCoordinator):
             if (
                 plan and plan.feasible and plan.end
                 and now_utc < plan.end
+                and not self._goal_reached_stop   # Bug 50: goal reached = a real end, not a price gap
             ):
                 _LOGGER.info(
                     "[Notify] Laddning pausad men plan aktiv till %s – håller inne stopp-notis",
                     plan.end.astimezone().strftime("%H:%M"),
                 )
             else:
+                _LOGGER.info(
+                    "[Notify] Stopp-notis schemalagd (60s) – orsak=%s",
+                    "mål nått" if self._goal_reached_stop else "plan slut",
+                )
                 self._notified_stop_session = state.session_id
                 self._charging_seen_this_session = False  # Bug 10: reset so same session doesn't trigger again
                 self._cable_session_stop_notified = True  # Prevent duplicate via _send_stop_notification()
@@ -2952,7 +2971,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         from homeassistant.util import dt as dt_util
         return int((dt_util.utcnow() - self._cable_session_start_time).total_seconds() / 60)
 
-    def _send_stop_notification(self) -> None:
+    def _send_stop_notification(self, from_cable_out: bool = False) -> None:
         """Send a delayed stop notification with fresh SOC (Bug 4).
 
         Used by both SuspendedEV handling (Bug 5) and cable-out (Bug 6).
@@ -2970,7 +2989,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
         async def _delayed(_now=None):
             # Bug 12: Guard mot omstart/stale state
-            if not self.ocpp.state.cable_connected:
+            if not from_cable_out and not self.ocpp.state.cable_connected:   # Bug 50
                 _LOGGER.debug("[Notify] _delayed: cable ej ansluten, avbryter stopp-notis")
                 return
             if self.ocpp.state.charging:
