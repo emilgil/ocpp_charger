@@ -216,7 +216,18 @@ Samma nollning rensade `_day_charging_dismissed`, pristak, deadline-helper och m
 - **Tester:** `tests/test_bug51.py` (8, rot-venv).
 - **Deployad 2026-10-05 19:19** (`__init__.py` via `scp`, `ha core restart`, ingen laddning pågick). **Live-verifierat:** 19:30:01 `[Bug51] Upprepad Available`,
   ingen `[Bug13A]`-rad. **Kvar:** fix B (kräver dagladdning på med kabel ur), äkta urkoppling (`[Bug13A]` en gång + stoppnotis enligt Bug 50) och nästa inkoppling.
-- **Öppen punkt:** manuell dagladdnings-override (Bug 26) sparas för alltid och nollas aldrig vid urkoppling – ej beslutat om den ska nollas vid urkoppling eller midnatt.
+- **Öppen punkt (löst i Bug 52):** manuell dagladdnings-override nollas nu vid äkta urkoppling.
+
+### Dagladdnings-override nollas vid urkoppling (Bug 52)
+Bug 26:s manuella override (`_day_charging_manual_override`, sparad i Store) nollades aldrig, så ett tillfälligt
+"slå på dagladdning" låg kvar tills någon slog av den. Urkopplingsblocket i `_check_notify_events()` (bara vid övergången
+till `Available`, Bug 51) sätter nu `_day_charging_manual_override = False` + `_sync_allow_day_charging()` → veckoschemat gäller direkt;
+`_save_state()` i samma block persisterar det.
+- **Överlever:** inkoppling, Garos upprepade `Available` (Bug 51) och omstart med kabeln inne. **Nollas inte** av midnatt.
+- **Omstart med kabeln ur:** override återställs från Store men trigger-svarets `Available` (`""` → `Available`, Bug 45) räknas som
+  övergång och nollar den direkt – en override satt med kabeln ur försvinner alltså vid nästa omstart.
+- **Tester:** `tests/test_bug52.py` (5, rot-venv).
+- **Deployad 2026-10-05 21:52, live-verifierad 2026-10-06:** urkoppling 06:52:55 → `[Bug13A]` en gång, Store `day_charging_manual_override: false` (var `true` före).
 
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
