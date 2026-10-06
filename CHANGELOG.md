@@ -1,5 +1,28 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-10-05 (natt): Bug 52 – manuell dagladdnings-override nollställs vid urkoppling
+
+**Bakgrund:** öppen punkt från Bug 51. Den manuella dagladdnings-overriden (Bug 26) sparades för alltid i
+Store och nollades aldrig, så ett tillfälligt "slå på för att jämföra" låg kvar tills någon slog av den.
+
+**Fix:** urkopplingsblocket i `_check_notify_events()` (kör bara vid övergången till `Available`, Bug 51)
+sätter `_day_charging_manual_override = False` och anropar `_sync_allow_day_charging()`, så dagladdning
+återgår direkt till veckoschemat. Den nollställda flaggan sparas av `_save_state()` i samma block.
+En override satt med kabeln ur överlever Garos upprepade `Available`; vid midnatt nollas den inte.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | två rader i urkopplingsblocket |
+
+**Tester:** ny `tests/test_bug52.py` (5 tester, tre röda före fixen). Övriga testfiler gröna.
+
+**Deploy 2026-10-05 21:52** (`__init__.py`; full HA-omstart, kabel inkopplad men ingen laddning pågick). Ren
+start, 0 fel. Overriden återställdes från Store (kabel i → ska överleva). **Live-verifierat 2026-10-06:**
+äkta urkoppling 06:52:55 körde urkopplingsblocket en gång (`[Bug13A]`), därefter `[Bug51] Upprepad Available`;
+Store har nu `day_charging_manual_override: false` (var `true` 21:51). Fix B från Bug 51 fortfarande ej observerad.
+Bonus: Bug 51 fix A bekräftad över ett dygn, och Bug 50 väg A syntes live (`Stopp-notis schemalagd (60s) – orsak=mål nått`
+22:52:14, ingen ny notis vid kabel-ur) – själva pushen kunde inte ses i loggen.
+
 ## 2026-10-05 (kväll): Bug 51 – dagladdningsnotis var 15:e minut med urkopplad kabel
 
 **Symptom:** Från 15:31 kom "Dagladdning är billigare" var 15:e minut, kabeln urkopplad hela tiden
