@@ -229,6 +229,18 @@ till `Available`, Bug 51) sätter nu `_day_charging_manual_override = False` + `
 - **Tester:** `tests/test_bug52.py` (5, rot-venv).
 - **Deployad 2026-10-05 21:52, live-verifierad 2026-10-06:** urkoppling 06:52:55 → `[Bug13A]` en gång, Store `day_charging_manual_override: false` (var `true` före).
 
+### kWh-mål styr laddplanen (Bug 53)
+`target_kwh > 0` (Target Energy) har prioritet över SOC-målet – planering, mål-nått-koll och ETA. `target_kwh == 0` = som förut.
+Mått = nätsidans energi (som Session Energy), ingen verkningsgradskorrigering; referens = hela kabelsessionen via
+`_session_kwh_delivered()` (`_session_total_kwh` + aktiv tx; `state.energy_kwh` nollas av Garos 15-min-reset och får inte användas).
+`_remaining_kwh_goal()` (`None` om inget kWh-mål) delas av `_update_charge_plan()` (`energy_needed`, loggrad `kWh-mål aktivt`),
+`_update_price_cap_plan()` (Bug 35c) och `PriceCapStatusSensor._capped_raw_slots()` (Bug 35b). `_charging_goal_reached()` jämför
+bara kWh när målet är satt (SOC ignoreras helt), så stopp och undertryckt auto-start förblir symmetriska (Bug 23). `_update_eta()`
+får `session_kwh` = kabelsessionen. **`target_kwh` nollas vid äkta urkoppling** (kantdetekterad `Available`, Bug 51; omstart med
+kabeln ur nollar det också, som Bug 52). Kvarvarande: Chargeable Amount räknar fortfarande mot SOC.
+**Tester:** `tests/test_bug53.py` (9, rot-venv). **Deployad 2026-10-15 21:06, delvis live-verifierad:** plan 27,6 kWh för mål 25 kWh
+(var 30,4 SOC-baserat). **Kvar:** stopp vid kWh-mål, nollning vid nästa urkoppling.
+
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
 `Laddfönster`-grafen/`charge_windows`-sensorn Smart-planens billigaste luckor fast bilen laddade direkt

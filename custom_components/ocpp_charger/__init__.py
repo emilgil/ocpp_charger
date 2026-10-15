@@ -1235,6 +1235,22 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 pass
         _LOGGER.debug("[SmartCharge] Seeded price history with %d interval prices", count)
 
+    def _session_kwh_delivered(self) -> float:
+        """Bug 53: energy delivered this cable session (survives Garo's 15-min reset)."""
+        state = self.ocpp.state
+        active_tx_energy = state.energy_kwh if state.transaction_id is not None else 0.0
+        return self._session_total_kwh + active_tx_energy
+
+    def _remaining_kwh_goal(self) -> float | None:
+        """Bug 53: remaining grid-side kWh to the user's kWh target, or None if unset.
+
+        target_kwh > 0 takes priority over target_soc. Same measure as
+        session_energy, so no charge-efficiency correction.
+        """
+        if self.target_kwh <= 0:
+            return None
+        return max(0.0, self.target_kwh - self._session_kwh_delivered())
+
     def _charging_goal_reached(self) -> tuple[bool, str]:
         """Return (reached, reason) when the charging goal is met.
 
@@ -1260,8 +1276,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
         open (Bug 23).
         """
         state = self.ocpp.state
-        active_tx_energy = state.energy_kwh if state.transaction_id is not None else 0.0
-        already_charged_kwh = self._session_total_kwh + active_tx_energy
+        already_charged_kwh = self._session_kwh_delivered()
+        # Bug 53: a kWh target overrides the SOC target entirely
+        if self.target_kwh > 0:
+            if already_charged_kwh >= self.target_kwh:
+                return True, f"Energi {already_charged_kwh:.2f} kWh >= mål {self.target_kwh:.2f} kWh"
+            return False, ""
         soc = estimate_soc(
             self._session_start_soc,
             already_charged_kwh,
@@ -1271,8 +1291,6 @@ class OCPPCoordinator(DataUpdateCoordinator):
         )
         if soc is not None and self.target_soc > 0 and soc >= self.target_soc:
             return True, f"SOC {soc:.0f}% >= mål {self.target_soc:.0f}%"
-        if self.target_kwh > 0 and state.energy_kwh >= self.target_kwh:
-            return True, f"Energi {state.energy_kwh:.2f} kWh >= mål {self.target_kwh:.2f} kWh"
         return False, ""
 
     def _update_smart_charging(self) -> None:
@@ -1572,7 +1590,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             DEFAULT_CHARGE_EFFICIENCY, self.ocpp.state.soc_percent,
         )
         self.estimated_completion = self.smart_controller.estimate_completion_time(
-            session_kwh=self.ocpp.state.energy_kwh,
+            session_kwh=already_charged_kwh,  # Bug 53: whole cable session, survives Garo reset
             target_kwh=self.target_kwh if self.target_kwh > 0 else None,
             target_soc=self.target_soc if self.target_soc > 0 else None,
             current_soc=eta_current_soc,
@@ -1977,6 +1995,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
             self._reset_deadline_helper()    # Feature 6: clear manual deadline on disconnect
             self.price_cap_ore_kwh = 0.0     # Feature 5: clear price cap on disconnect
+            self.target_kwh = 0.0            # Bug 53: kWh-mål gäller bara kabelsessionen (annars slår ett glömt mål ut SOC-målet)
             self._price_cap_intervals = []
             self._price_cap_raw_slots = []
             self._last_plan_update = None    # Feature 5/6: force re-plan with automatic deadline
@@ -2246,10 +2265,13 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("[ChargePlanner] Frozen after RemoteStart (%.0fs < 300s), skipping recalc", elapsed)
                 return
         # ── Goal already reached → skip planning (Bug 1) ──
-        soc = self.ocpp.state.soc_percent
-        soc_reached = soc is not None and self.target_soc > 0 and soc >= self.target_soc
-        kwh_reached = self.target_kwh > 0 and self.ocpp.state.energy_kwh >= self.target_kwh
-        if soc_reached or kwh_reached:
+        # Bug 53: a kWh target takes priority over the SOC target.
+        if self.target_kwh > 0:
+            goal_reached = self._session_kwh_delivered() >= self.target_kwh
+        else:
+            soc = self.ocpp.state.soc_percent
+            goal_reached = soc is not None and self.target_soc > 0 and soc >= self.target_soc
+        if goal_reached:
             if self.charge_mode == CHARGE_MODE_IMMEDIATE:
                 self._clear_immediate_plan()  # Bug 42: don't leave a finished window in the graph
             _LOGGER.debug("[ChargePlanner] Mål redan nått, hoppar över planering")
@@ -2357,6 +2379,14 @@ class OCPPCoordinator(DataUpdateCoordinator):
         soc_needed = max(0.0, target_soc - current_soc)
         # NOTE: already_charged_kwh NOT subtracted here – it's factored into estimated current_soc
         energy_needed = max(0.0, (soc_needed / 100.0) * battery_capacity / DEFAULT_CHARGE_EFFICIENCY)
+        # Bug 53: kWh target has priority – replace the SOC-based need with remaining kWh.
+        kwh_remaining = self._remaining_kwh_goal()
+        if kwh_remaining is not None:
+            energy_needed = kwh_remaining
+            _LOGGER.debug(
+                "[ChargePlanner] kWh-mål aktivt: mål=%.2f kWh laddat=%.2f kWh → behov=%.2f kWh (SOC-mål ignoreras)",
+                self.target_kwh, already_charged_kwh, energy_needed,
+            )
 
         # Power in kW: use schedule current, capped by vehicle's max current if set
         voltage = DEFAULT_VOLTAGE
@@ -2722,7 +2752,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
             current_soc = self.ocpp.state.soc_percent
             target_soc = self.target_soc
             capacity = self.battery_capacity_kwh
-            if (
+            if self.target_kwh > 0:
+                # Bug 53: kWh target has priority (grid-side, no efficiency division)
+                energy_needed_kwh = self._remaining_kwh_goal()
+            elif (
                 current_soc is not None
                 and target_soc > 0
                 and capacity > 0
