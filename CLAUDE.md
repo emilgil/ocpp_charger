@@ -42,7 +42,7 @@ custom_components/ocpp_charger/
   ocpp_client.py       – WebSocket OCPP 1.6-server, ChargerState
   config_flow.py       – Setup flow (4 steg) + options flow
   const.py             – Alla konstanter
-  sensor.py            – 23 sensorer
+  sensor.py            – 24 sensorer
   binary_sensor.py     – 4 binära sensorer
   number.py            – 6 number-entiteter
   select.py            – 3 select-entiteter
@@ -241,6 +241,13 @@ kabeln ur nollar det också, som Bug 52). Kvarvarande: Chargeable Amount räknar
 **Tester:** `tests/test_bug53.py` (9, rot-venv). **Deployad 2026-10-15 21:06, delvis live-verifierad:** plan 27,6 kWh för mål 25 kWh
 (var 30,4 SOC-baserat). **Kvar:** stopp vid kWh-mål, nollning vid nästa urkoppling.
 
+### Charge Goal-sensor (Feature 11)
+Read-only textsensor som visar det styrande målet i båda enheterna; number-entiteterna skriver aldrig till varandra. Spec: `feature11.md`.
+- `OCPPCoordinator.charge_goal_info()` (ren läsning) delar `_session_kwh_delivered()` med Bug 53. kWh-mål: slut-SOC = `min(100, bas + kWh × 0,92 / kapacitet × 100)` (`(max)` vid tak); SOC-mål (0 → 80): kWh = `(mål − bas) / 100 × kapacitet / 0,92`.
+- Bas: `_session_start_soc` (`session_start`, stabil under laddning) → `state.soc_percent` med kabel / fordonets SOC-entitet utan (`current`) → `missing`. SOC utanför 0–100 räknas som saknad.
+- Rör inte planerare, styrlogik eller number-entiteter. **Tester:** `tests/test_feature11.py` (7, rot-venv).
+- **Deployad 2026-10-15 21:28**, ren omstart. Live: Kia, 57 % SOC, Target Energy 25 → `25,0 kWh ≈ 93 %`, `base_source: current`. **Kvar:** specens testfall 2–5 (Skoda, `(max)`, direkt uppdatering) och `session_start`-basen under en riktig session.
+
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
 `Laddfönster`-grafen/`charge_windows`-sensorn Smart-planens billigaste luckor fast bilen laddade direkt
@@ -420,7 +427,7 @@ _selection_notified: bool                 # Feature 10: vals-notisen skickad den
 
 ## Entiteter
 
-### Sensorer (23 st)
+### Sensorer (24 st)
 | Sensor | Beskrivning |
 |--------|-------------|
 | Status | Connector status (Available, Charging, etc.) |
@@ -445,6 +452,7 @@ _selection_notified: bool                 # Feature 10: vals-notisen skickad den
 | Total Charging Cost | Kumulativ totalkostnad alla sessioner (SEK) |
 | Charge Windows | Diagnostisk: laddplanens slots med planerad + faktisk energi (Feature 3) |
 | Price Cap Status | Diagnostisk: antal råslots ≤ pristaket cappat vid återstående SoC-behov (`_capped_raw_slots()`, Bug 35/35b – `state` == `slots_count`) + expected_kwh/expected_cost_sek + `slots`-lista (time/price_ore_kwh/cost_sek) (Feature 5) |
+| Charge Goal | Feature 11: aktivt laddmål i både kWh och % (text, t.ex. `25,0 kWh ≈ 93 %`). `target_kwh > 0` styr (Bug 53), annars SOC-målet. Bas = `_session_start_soc`, annars aktuell SOC; saknad SOC → `None`/"(SOC okänd)". Logik i `charge_goal_info()`; attribut `active_goal`, `target_kwh_equiv`, `target_soc_equiv`, `base_soc`, `base_source`, `delivered_kwh`, `remaining_kwh` m.fl. Entity_id: `sensor.garage_ev_charger_garocs_48671aa056e80_charge_goal` |
 
 ### Binära sensorer (4 st)
 | Sensor | Beskrivning |
