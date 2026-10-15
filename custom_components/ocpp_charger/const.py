@@ -61,6 +61,7 @@ NUMBER_BATTERY_CAPACITY = "battery_capacity"
 # Price cap charging (Feature 5)
 NUMBER_PRICE_CAP        = "price_cap_ore_kwh"
 SENSOR_PRICE_CAP_STATUS = "price_cap_status"
+SENSOR_CHARGE_GOAL = "charge_goal"  # Feature 11
 
 # Feature 7: binary sensor indicating price-cap mode is configured (cap > 0)
 BINARY_SENSOR_PRICE_CAP_ACTIVE = "price_cap_active"

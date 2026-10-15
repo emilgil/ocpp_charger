@@ -1,5 +1,23 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-10-15: Feature 11 – Charge Goal-sensor
+
+**Bakgrund:** efter Bug 53 styr Target Energy när den är > 0, men UI visade inte vad målet motsvarar i den andra enheten.
+
+**Ändring:** ny read-only sensor `Charge Goal` som visar det aktiva målet i både kWh och % (`25,0 kWh ≈ 93 %`, `80 % ≈ 25,1 kWh`).
+Ingen number-entitet skriver till en annan. Saknad SOC ger `(SOC okänd)`, aldrig 0 %.
+
+| Fil | Ändring |
+|-----|---------|
+| `const.py` | `SENSOR_CHARGE_GOAL` |
+| `__init__.py` | `charge_goal_info()` |
+| `sensor.py` | `ChargeGoalSensor` |
+
+**Tester:** ny `tests/test_feature11.py` (7 tester).
+
+**Deploy 2026-10-15 21:28** (`const.py`, `__init__.py`, `sensor.py`; full HA-omstart, ingen laddning). Ren start.
+**Live-verifierat:** Kia, 57 % → `25,0 kWh ≈ 93 %`. **Kvar:** specens testfall 2–5.
+
 ## 2026-10-15: Bug 53 – kWh-mål (Target Energy) styr laddplanen
 
 **Bakgrund:** `Target Energy` omräknade planen men dimensionerade den ändå alltid efter SOC-målet (och med saknad SOC

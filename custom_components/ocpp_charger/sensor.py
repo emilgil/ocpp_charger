@@ -45,6 +45,7 @@ from .const import (
     SENSOR_TOTAL_COST,
     SENSOR_CHARGE_WINDOWS,
     SENSOR_PRICE_CAP_STATUS,
+    SENSOR_CHARGE_GOAL,
 )
 
 
@@ -80,6 +81,7 @@ async def async_setup_entry(
         TotalChargingCostSensor(coordinator, entry),
         ChargeWindowsSensor(coordinator, entry),
         PriceCapStatusSensor(coordinator, entry),
+        ChargeGoalSensor(coordinator, entry),
     ]
     async_add_entities(entities)
 
@@ -752,3 +754,37 @@ class PriceCapStatusSensor(OCPPSensorBase):
                 for s in capped
             ],
         }
+
+
+class ChargeGoalSensor(OCPPSensorBase):
+    """Feature 11: active charge goal in both kWh and SOC %. Read-only."""
+
+    def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, SENSOR_CHARGE_GOAL, "Charge Goal")
+        self._attr_icon = "mdi:target"
+
+    @staticmethod
+    def _fmt_kwh(v: float) -> str:
+        return f"{v:.1f}".replace(".", ",") + " kWh"
+
+    @staticmethod
+    def _fmt_soc(v: float) -> str:
+        return f"{v:.0f} %"
+
+    @property
+    def native_value(self) -> str:
+        i = self._coord.charge_goal_info()
+        if i["active_goal"] == "kwh":
+            left = self._fmt_kwh(i["target_kwh_equiv"])
+            if i["target_soc_equiv"] is None:
+                return f"{left} (SOC okänd)"
+            right = self._fmt_soc(i["target_soc_equiv"])
+            return f"{left} ≈ {right}" + (" (max)" if i["soc_capped"] else "")
+        left = self._fmt_soc(i["target_soc_equiv"])
+        if i["target_kwh_equiv"] is None:
+            return f"{left} (SOC okänd)"
+        return f"{left} ≈ {self._fmt_kwh(i['target_kwh_equiv'])}"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return self._coord.charge_goal_info()

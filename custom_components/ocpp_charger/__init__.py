@@ -1251,6 +1251,66 @@ class OCPPCoordinator(DataUpdateCoordinator):
             return None
         return max(0.0, self.target_kwh - self._session_kwh_delivered())
 
+    def charge_goal_info(self) -> dict:
+        """Feature 11: active charge goal expressed in both kWh and SOC %.
+
+        Pure read. Missing SOC gives None (never 0.0). target_kwh > 0 wins (Bug 53).
+        """
+        vehicle = self.active_vehicle or {}
+        capacity = float(vehicle.get(VEHICLE_CAPACITY, 0) or self.battery_capacity_kwh)
+        eff = DEFAULT_CHARGE_EFFICIENCY
+
+        base_soc: float | None = None
+        base_source = "missing"
+        if self._session_start_soc is not None:
+            base_soc, base_source = float(self._session_start_soc), "session_start"
+        elif self.ocpp.state.cable_connected:
+            if self.ocpp.state.soc_percent is not None:
+                base_soc, base_source = float(self.ocpp.state.soc_percent), "current"
+        else:
+            soc_ent = vehicle.get(VEHICLE_SOC_ENTITY, "")
+            st = self.hass.states.get(soc_ent) if soc_ent else None
+            if st is not None and st.state not in ("unavailable", "unknown", ""):
+                try:
+                    base_soc, base_source = float(st.state), "current"
+                except (ValueError, TypeError):
+                    pass
+        if base_soc is not None and not (0.0 <= base_soc <= 100.0):
+            base_soc, base_source = None, "missing"
+
+        delivered = self._session_kwh_delivered() if self.ocpp.state.cable_connected else 0.0
+
+        soc_capped = False
+        if self.target_kwh > 0:
+            active = "kwh"
+            kwh_equiv: float | None = float(self.target_kwh)
+            soc_equiv: float | None = None
+            if base_soc is not None and capacity > 0:
+                raw = base_soc + kwh_equiv * eff / capacity * 100.0
+                soc_capped = raw > 100.0
+                soc_equiv = min(100.0, raw)
+        else:
+            active = "soc"
+            soc_equiv = float(self.target_soc) if self.target_soc > 0 else 80.0
+            kwh_equiv = None
+            if base_soc is not None and capacity > 0:
+                kwh_equiv = max(0.0, (soc_equiv - base_soc) / 100.0 * capacity / eff)
+
+        remaining = max(0.0, kwh_equiv - delivered) if kwh_equiv is not None else None
+
+        return {
+            "active_goal": active,
+            "target_kwh_equiv": round(kwh_equiv, 2) if kwh_equiv is not None else None,
+            "target_soc_equiv": round(soc_equiv, 1) if soc_equiv is not None else None,
+            "soc_capped": soc_capped,
+            "base_soc": round(base_soc, 1) if base_soc is not None else None,
+            "base_source": base_source,
+            "delivered_kwh": round(delivered, 2),
+            "remaining_kwh": round(remaining, 2) if remaining is not None else None,
+            "capacity_kwh": round(capacity, 1),
+            "vehicle": vehicle.get(VEHICLE_NAME, ""),
+        }
+
     def _charging_goal_reached(self) -> tuple[bool, str]:
         """Return (reached, reason) when the charging goal is met.
 
