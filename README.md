@@ -105,7 +105,7 @@ Helpern nollställs automatiskt till `00:00` när kabeln kopplas ur.
 - **Auto Vehicle Detection** – Auto-identifiera fordon vid inkoppling
 - **Max Charging Current** – Sätt övre strömgräns
 - **Target Battery Level** – Hur mycket du vill ladda (% SOC)
-- **Target Energy** – Hur mycket du vill ladda (kWh, 0 = obegränsat)
+- **Target Energy** – Hur mycket du vill ladda (kWh, 0 = obegränsat). Har prioritet över Target Battery Level när det är satt och nollas när kabeln dras ur
 - **Battery Capacity** – Batterikapacitet för beräkningar
 - **Override Current** – Manuell strömgräns vid schema-override
 - **Price Cap** – Pristak i öre/kWh för Smart-läget (0 = av, ladda alla intervall under taket)

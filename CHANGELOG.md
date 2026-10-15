@@ -1,5 +1,35 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-10-15: Bug 53 – kWh-mål (Target Energy) styr laddplanen
+
+**Bakgrund:** `Target Energy` omräknade planen men dimensionerade den ändå alltid efter SOC-målet (och med saknad SOC
+som 0 % → 69,57 kWh). Bara stopp-villkoren såg kWh-målet, och de jämförde mot `state.energy_kwh` (aktiv transaktion,
+nollas av Garos 15-minutersreset).
+
+**Fix:** `target_kwh > 0` har prioritet över SOC-målet i planering, mål-nått-koll och ETA. Måttet är nätsidans energi
+(samma som Session Energy), ingen verkningsgradskorrigering; referens = hela kabelsessionen
+(`_session_total_kwh` + aktiv transaktion). `target_kwh == 0` beter sig som förut.
+- Nya hjälpare `_session_kwh_delivered()` och `_remaining_kwh_goal()` (delas av planerare, pristaks-cappning och sensor).
+- `_update_charge_plan()`: skip-guard och `energy_needed` (loggrad `kWh-mål aktivt`).
+- `_charging_goal_reached()`: kWh-målet ensamt när satt (stopp + undertryckt auto-start, Bug 23).
+- `_update_price_cap_plan()` (Bug 35c) och `PriceCapStatusSensor._capped_raw_slots()` (Bug 35b): cappar mot kWh-målet.
+- `_update_eta()`: `session_kwh` = hela kabelsessionen.
+- `target_kwh` nollas vid äkta urkoppling (kantdetekterad, Bug 51) – annars slår ett glömt mål ut SOC-målet nästa session.
+
+| Fil | Ändring |
+|-----|---------|
+| `__init__.py` | hjälpare, planering, mål-nått, pristak, ETA, nollning vid urkoppling |
+| `sensor.py` | `_capped_raw_slots()` |
+
+**Tester:** ny `tests/test_bug53.py` (9 tester). Övriga testfiler gröna.
+
+**Deploy 2026-10-15 21:06** (`__init__.py`, `sensor.py`; full HA-omstart, kabel inkopplad, ingen laddning). Ren start, 0 fel.
+**Live-verifierat:** Target Energy stod på 25 kWh → `kWh-mål aktivt: mål=25.00 kWh … behov=25.00 kWh`, plan 27,6 kWh
+(före: 30,4 kWh SOC-baserat; avrundning uppåt till hel 15-min-slot). **Kvar:** stopp vid kWh-mål ("Energi … >= mål") och
+nollning vid nästa äkta urkoppling ej observerade.
+
+**Utanför scope:** Chargeable Amount räknar fortfarande mot SOC; SOC 0 % när SOC saknas (multi-vehicle) kvarstår men spelar ingen roll med kWh-mål.
+
 ## 2026-10-05 (natt): Bug 52 – manuell dagladdnings-override nollställs vid urkoppling
 
 **Bakgrund:** öppen punkt från Bug 51. Den manuella dagladdnings-overriden (Bug 26) sparades för alltid i

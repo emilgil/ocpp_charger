@@ -688,7 +688,10 @@ class PriceCapStatusSensor(OCPPSensorBase):
         current_soc = coord.ocpp.state.soc_percent
         target_soc = coord.target_soc
         capacity = coord.battery_capacity_kwh
-        if (
+        if coord.target_kwh > 0:
+            # Bug 53: kWh target has priority (grid-side, no efficiency division)
+            energy_needed_kwh = coord._remaining_kwh_goal()
+        elif (
             current_soc is not None
             and target_soc > 0
             and capacity > 0
