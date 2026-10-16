@@ -2210,7 +2210,12 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     estimated_end=self.estimated_completion,
                 )
 
-        if is_charging and state.power_w > 100:
+        # Bug 54: the goal-reached branch sets the flag and sends RemoteStop in the same cycle, while
+        # charging is still running (power > 100 W) – skip the reset until the stop has had time to land.
+        if is_charging and state.power_w > 100 and not (
+            self._last_remote_stop is not None
+            and (datetime.now(timezone.utc) - self._last_remote_stop).total_seconds() < 30
+        ):
             self._goal_reached_stop = False   # Bug 50: new charging → an old stop reason no longer applies
 
         # ── Charging stopped (Bug 10: guard + delayed 60s for fresh SOC) ─────────
