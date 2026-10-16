@@ -43,8 +43,10 @@ nollas av Garos 15-minutersreset).
 
 **Deploy 2026-10-15 21:06** (`__init__.py`, `sensor.py`; full HA-omstart, kabel inkopplad, ingen laddning). Ren start, 0 fel.
 **Live-verifierat:** Target Energy stod på 25 kWh → `kWh-mål aktivt: mål=25.00 kWh … behov=25.00 kWh`, plan 27,6 kWh
-(före: 30,4 kWh SOC-baserat; avrundning uppåt till hel 15-min-slot). **Kvar:** stopp vid kWh-mål ("Energi … >= mål") och
-nollning vid nästa äkta urkoppling ej observerade.
+(före: 30,4 kWh SOC-baserat; avrundning uppåt till hel 15-min-slot). **Fullt live-verifierat natten 2026-10-16:**
+planen följde kWh-målet hela natten (SOC 68–74 % mot SOC-mål 100 %), 01:43:03 `Mål nått (Energi 25.11 kWh >= mål 25.00 kWh), stoppar`
+(RemoteStop Accepted), därefter bara `Auto-start undertryckt` var 20:e s, inga nya RemoteStart; äkta urkoppling 07:18:41
+(`[Bug13A]`) nollade Target Energy till 0, upprepad `Available` därefter rörde den inte (`[Bug51]`). Inga ERROR/WARNING.
 
 **Utanför scope:** Chargeable Amount räknar fortfarande mot SOC; SOC 0 % när SOC saknas (multi-vehicle) kvarstår men spelar ingen roll med kWh-mål.
 
