@@ -238,8 +238,8 @@ Mått = nätsidans energi (som Session Energy), ingen verkningsgradskorrigering;
 bara kWh när målet är satt (SOC ignoreras helt), så stopp och undertryckt auto-start förblir symmetriska (Bug 23). `_update_eta()`
 får `session_kwh` = kabelsessionen. **`target_kwh` nollas vid äkta urkoppling** (kantdetekterad `Available`, Bug 51; omstart med
 kabeln ur nollar det också, som Bug 52). Kvarvarande: Chargeable Amount räknar fortfarande mot SOC.
-**Tester:** `tests/test_bug53.py` (9, rot-venv). **Deployad 2026-10-15 21:06, delvis live-verifierad:** plan 27,6 kWh för mål 25 kWh
-(var 30,4 SOC-baserat). **Kvar:** stopp vid kWh-mål, nollning vid nästa urkoppling.
+**Tester:** `tests/test_bug53.py` (9, rot-venv). **Deployad 2026-10-15 21:06, live-verifierad 2026-10-16:** plan 27,6 kWh för mål 25 kWh
+(var 30,4 SOC-baserat), stopp 01:43 vid 25,11 kWh trots SOC-mål 100 %, därefter bara `Auto-start undertryckt`, och urkoppling 07:18 nollade målet.
 
 ### Charge Goal-sensor (Feature 11)
 Read-only textsensor som visar det styrande målet i båda enheterna; number-entiteterna skriver aldrig till varandra. Spec: `feature11.md`.
