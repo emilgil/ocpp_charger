@@ -435,9 +435,12 @@ class OCPPClient:
                             self._hass.async_create_task(self.set_charging_limit(limit))
                         else:
                             asyncio.ensure_future(self.set_charging_limit(limit))
-                if not self.state.charging:
-                    self.state._charging_start = datetime.now(timezone.utc)
-                self.state.charging = True
+                # Bug 55: Garo skickar MeterValues under hela öppna tx, även i SuspendedEV/EVSE.
+                # StatusNotification är auktoritativ för charging – flippa inte tillbaka till True.
+                if self.state.connector_status not in ("SuspendedEV", "SuspendedEVSE"):
+                    if not self.state.charging:
+                        self.state._charging_start = datetime.now(timezone.utc)
+                    self.state.charging = True
                 self.state.cable_connected = True
                 if self.state.connector_status == "Unknown":
                     self.state.connector_status = "Charging"

@@ -1399,6 +1399,28 @@ class OCPPCoordinator(DataUpdateCoordinator):
         if not self.ocpp.state.cable_connected:
             return
 
+        # ── Bug 5/55: SuspendedEV + mål nått – bilen nöjd, avsluta transaktionen ──
+        # Måste ligga före Bug 13B, som annars returnerar på alla SuspendedEV.
+        now = datetime.now(timezone.utc)
+        if state.connector_status == "SuspendedEV" and state.power_w < 100 and state.transaction_id is not None:
+            if self._suspended_ev_since is None:
+                self._suspended_ev_since = now
+            elif (now - self._suspended_ev_since).total_seconds() >= 60:
+                goal_reached, goal_reason = self._charging_goal_reached()
+                if goal_reached:
+                    _LOGGER.info(
+                        "[SmartCharge] SuspendedEV i >60s och mål nått (%s) – bilen nöjd, avslutar",
+                        goal_reason,
+                    )
+                    self._goal_reached_stop = True   # Bug 50: konsekvent stoppskäl
+                    self._suspended_ev_since = None
+                    self._guarded_remote_stop(now)
+                    self._send_stop_notification()
+                    return
+                # Mål ej nått → bilen pausar av annat skäl (egen timer, batterivärmning): rör inget
+        else:
+            self._suspended_ev_since = None
+
         # ── Bug 13B: SuspendedEV guard – car refuses charging, skip auto-start ──
         connector_status = self.ocpp.state.connector_status or ""
         if connector_status == "SuspendedEV":
@@ -1446,20 +1468,6 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
         if not self.ocpp.state.charging:
             return
-
-        # ── Bug 5: SuspendedEV guard – car satisfied, end transaction ────
-        now = datetime.now(timezone.utc)
-        if state.connector_status == "SuspendedEV" and state.power_w < 100:
-            if self._suspended_ev_since is None:
-                self._suspended_ev_since = now
-            elif (now - self._suspended_ev_since).total_seconds() >= 60:
-                if state.charging:
-                    _LOGGER.info("[SmartCharge] SuspendedEV i >60s – bilen nöjd, avslutar")
-                    self._guarded_remote_stop(now)
-                    self._send_stop_notification()
-                return
-        else:
-            self._suspended_ev_since = None
 
         # ── Plan-based stop/start (primary logic) ────────────────────────
         # If a feasible charge plan exists, use it to gate charging:
@@ -2029,8 +2037,16 @@ class OCPPCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("[Bug51] Upprepad Available – ingen statusändring, hoppar över urkopplingsblocket")
 
         # ── Cable disconnected → send stop-notif if not already sent (Bug 6) ──
-        if available_edge and self._cable_session_energy_kwh > 0:  # Bug 51
-            self._send_stop_notification(from_cable_out=True)   # Bug 50
+        # Bug 56: Garo skickar Available före StopTransaction när kabeln dras under öppen tx,
+        # så ackumulatorn är ännu inte uppdaterad. Räkna med den öppna transaktionens energi.
+        if available_edge:  # Bug 51
+            pending_tx_kwh = (
+                state.energy_kwh if state.transaction_id is not None else 0.0
+            )
+            if self._cable_session_energy_kwh + pending_tx_kwh > 0:
+                self._send_stop_notification(from_cable_out=True)   # Bug 50
+            else:
+                _LOGGER.debug("[Bug56] Available-kant utan energi i kabelsessionen – ingen sammanfattning")
 
         # ── Reset _was_charging when cable is disconnected ───────────────
         if available_edge:  # Bug 51
@@ -3091,14 +3107,18 @@ class OCPPCoordinator(DataUpdateCoordinator):
         Triggers the active vehicle's wake_action first (Bug 48), then waits 60s for SOC to sync.
         """
         if self._cable_session_stop_notified:
+            _LOGGER.debug("[Bug56] Stopp-notis redan förbrukad denna kabelsession – hoppar över")
             return
         self._cable_session_stop_notified = True
 
         # Bug 48: wake the vehicle that actually charged, not always Kia
         self._wake_active_vehicle()
 
-        energy_kwh = self._cable_session_energy_kwh
-        cost_sek = self._cable_session_cost_sek
+        # Bug 56: värdet vid anropet inkl. öppen tx – golv om StopTransaction aldrig hinner komma
+        st = self.ocpp.state
+        tx_open = st.transaction_id is not None
+        energy_at_call = self._cable_session_energy_kwh + (st.energy_kwh if tx_open else 0.0)
+        cost_at_call = self._cable_session_cost_sek + (st.accumulated_cost if tx_open else 0.0)
 
         async def _delayed(_now=None):
             # Bug 12: Guard mot omstart/stale state
@@ -3108,10 +3128,17 @@ class OCPPCoordinator(DataUpdateCoordinator):
             if self.ocpp.state.charging:
                 _LOGGER.debug("[Notify] _delayed: laddning aktiv, avbryter stopp-notis")
                 return
+            # Bug 56: läs ackumulatorn nu – StopTransaction har normalt hunnit lägga till sin energi
+            energy_kwh = max(self._cable_session_energy_kwh, energy_at_call)
+            cost_sek = max(self._cable_session_cost_sek, cost_at_call)
             if energy_kwh < 0.1:
                 _LOGGER.debug("[Notify] _delayed: energy_kwh=%.3f för lågt, avbryter stopp-notis", energy_kwh)
                 return
 
+            _LOGGER.info(
+                "[Notify] Skickar stopp-notis: %.2f kWh, %.2f SEK (from_cable_out=%s)",
+                energy_kwh, cost_sek, from_cable_out,
+            )
             self._update_soc_from_ha()
             self.notifier.on_charging_stopped(
                 soc_pct=self.ocpp.state.soc_percent,
