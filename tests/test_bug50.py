@@ -270,5 +270,34 @@ def test_old_store_without_key_and_cable_in_is_not_yet_sent():
     assert c._cable_session_stop_notified is False
 
 
+def test_bug54_flag_survives_the_cycle_that_sent_the_goal_stop():
+    """Mål-nått-grenen sätter flaggan och skickar RemoteStop medan laddningen ännu pågår (power > 100 W)."""
+    mod = _module()
+    c = _coordinator()
+    c._goal_reached_stop = True
+    c._last_remote_stop = datetime.now(timezone.utc)
+    c.ocpp.state.connector_status = "Charging"
+    c.ocpp.state.charging = True
+    c.ocpp.state.power_w = 10250
+    c.ocpp.state.session_id = "sess-3"
+    with patch.object(mod, "async_call_later"):
+        _run(c._check_notify_events)
+    assert c._goal_reached_stop is True
+
+
+def test_bug54_flag_cleared_when_charging_resumes_long_after_the_stop():
+    mod = _module()
+    c = _coordinator()
+    c._goal_reached_stop = True
+    c._last_remote_stop = datetime.now(timezone.utc) - timedelta(minutes=5)
+    c.ocpp.state.connector_status = "Charging"
+    c.ocpp.state.charging = True
+    c.ocpp.state.power_w = 7000
+    c.ocpp.state.session_id = "sess-4"
+    with patch.object(mod, "async_call_later"):
+        _run(c._check_notify_events)
+    assert c._goal_reached_stop is False
+
+
 if __name__ == "__main__":
     h.run_tests(globals())
