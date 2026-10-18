@@ -1,5 +1,33 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-10-18: Bug 54 + 55 + 56 – stoppnotis när bilen stannar själv, vid urkoppling och vid mål nått
+
+**Bug 54 (flaggrace):** mål-nått-grenen sätter `_goal_reached_stop` och skickar RemoteStop medan laddningen ännu pågår;
+"ny laddning"-återställningen (`is_charging and power_w > 100`) nollade flaggan i samma cykel och Bug 11 höll inne stoppnotisen
+(sett 2026-10-16 01:43). Återställningen hoppas nu över i 30 s efter `_last_remote_stop`. PR #41.
+
+**Bug 55 (bilen stannar själv, SuspendedEV):** natten 17/18 okt stannade Enyaq på 100 % (23:53) – ingen RemoteStop, ingen notis,
+transaktionen låg öppen till urkoppling 10:06. Tre fel: (A) Bug 11 tolkade stoppet som prishål, (B) MeterValues satte
+`charging=True` även i `SuspendedEV`/`SuspendedEVSE` (Garo skickar MeterValues hela öppna tx), (C) Bug 5-blocket låg efter
+Bug 13B, som returnerar på alla `SuspendedEV`, och nåddes aldrig.
+- `ocpp_client.py`: MeterValues sätter inte `charging=True` i Suspended-lägen (`StatusNotification` är auktoritativ).
+- `__init__.py` `_update_smart_charging()`: Bug 5 flyttat före Bug 13B; efter 60 s `SuspendedEV` med öppen tx och
+  `_charging_goal_reached()` → `_goal_reached_stop = True`, RemoteStop och `_send_stop_notification()`. Mål ej nått →
+  ingen åtgärd (bilen pausar av annat skäl).
+
+**Bug 56 (urkoppling med öppen tx):** Garo skickar `Available` ~80 ms före `StopTransaction` när kabeln dras under öppen tx;
+ackumulatorn `_cable_session_energy_kwh` var då 0 och sammanfattningen uteblev. `_send_stop_notification()` fångade dessutom
+energin vid anropet.
+- Urkopplingsvillkoret räknar ackumulator + öppen tx-energi; `_send_stop_notification()` läser ackumulatorn sent
+  (`max(ackumulator, värdet vid anropet)`) och loggar de tidigare tysta utgångarna (`[Bug56]`) samt `Skickar stopp-notis: … kWh`.
+
+**Tester:** ny `tests/test_bug55.py` (10) och `tests/test_bug56.py` (6); hela sviten passerar.
+
+**Deploy 2026-10-18 17:44** (`__init__.py`, `ocpp_client.py`; full HA-omstart, ingen laddning). Ren start, Bug 45-återanslutning som väntat.
+**Live-verifiering kvar:** nästa laddning där bilen själv stannar på målet → `SuspendedEV i >60s och mål nått … avslutar`,
+`Skickar stopp-notis` ≈60 s senare, ingen dubblett vid urkoppling; `Update cycle` under SuspendedEV ska visa `charging=False`;
+urkoppling med öppen tx → notis med rätt kWh. Bug 54: nästa mål-nått-stopp ska ge `Stopp-notis schemalagd (60s) – orsak=mål nått`.
+
 ## 2026-10-15: Feature 11 – Charge Goal-sensor
 
 **Bakgrund:** efter Bug 53 styr Target Energy när den är > 0, men UI visade inte vad målet motsvarar i den andra enheten.

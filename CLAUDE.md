@@ -248,6 +248,19 @@ Read-only textsensor som visar det styrande målet i båda enheterna; number-ent
 - Rör inte planerare, styrlogik eller number-entiteter. **Tester:** `tests/test_feature11.py` (7, rot-venv).
 - **Deployad 2026-10-15 21:28**, ren omstart. Live: Kia, 57 % SOC, Target Energy 25 → `25,0 kWh ≈ 93 %`, `base_source: current`. **Kvar:** specens testfall 2–5 (Skoda, `(max)`, direkt uppdatering) och `session_start`-basen under en riktig session.
 
+### Bilen stannar själv på målet (Bug 54 + 55 + 56)
+Natten 2026-10-17/18 stannade Enyaq på 100 % (Garo → `SuspendedEV` 23:53): ingen RemoteStop, ingen stoppnotis, transaktionen öppen till urkoppling 10:06.
+- **Bug 54:** `_goal_reached_stop` nollades i samma cykel som mål-nått-RemoteStop (laddningen pågår ännu, `power_w > 100`) → Bug 11 höll inne notisen.
+  "Ny laddning"-återställningen hoppas över i 30 s efter `_last_remote_stop`. Tester i `tests/test_bug50.py`.
+- **Bug 55:** (B1) `ocpp_client.py` MeterValues sätter inte `charging=True` när `connector_status` är `SuspendedEV`/`SuspendedEVSE` – `StatusNotification` är auktoritativ
+  (Garo skickar MeterValues hela öppna tx; `Unknown` efter omstart → `Charging` som förut). (C1) Bug 5-blocket i `_update_smart_charging()` ligger före Bug 13B (som returnerar på alla
+  `SuspendedEV`): `SuspendedEV` > 60 s + `power_w < 100` + öppen tx (`transaction_id is not None`) + `_charging_goal_reached()` → `_goal_reached_stop = True`, RemoteStop, `_send_stop_notification()`.
+  Mål ej nått → ingen åtgärd. Efter StopTransaction (`transaction_id=None`) kan blocket inte stoppa två gånger. Kvarvarande: tid i `SuspendedEV` räknas fortfarande in i laddtiden
+  (`accumulated_charging_seconds` stängs först vid StopTransaction) – egen bug om den visar fel.
+- **Bug 56:** Garo skickar `Available` ~80 ms före `StopTransaction` vid urkoppling under öppen tx. Urkopplingsvillkoret i `_check_notify_events()` räknar `_cable_session_energy_kwh` + öppen tx-energi,
+  och `_send_stop_notification()` läser ackumulatorn sent i `_delayed` (`max(ackumulator, värde vid anropet)`, samma för kostnad). Loggar `[Bug56]` för de tidigare tysta utgångarna.
+- **Tester:** `tests/test_bug55.py` (10), `tests/test_bug56.py` (6, rot-venv). **Deployad 2026-10-18 17:44**, ren omstart. **Live-verifiering kvar** (se CHANGELOG).
+
 ### Immediate-fönster (Bug 42)
 `_update_charge_plan()` anropade tidigare alltid `plan_cheapest_window()`, så i Immediate visade
 `Laddfönster`-grafen/`charge_windows`-sensorn Smart-planens billigaste luckor fast bilen laddade direkt
