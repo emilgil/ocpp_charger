@@ -3166,6 +3166,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._charger_was_connected = connected
         self._update_price_from_ha()
         self._apply_current_schedule()
+        # Bug 57: identifiera fordonet på samma push som Inkopplad-notisen, inte först vid nästa
+        # poll-cykel (upp till 60 s senare). Annars byggs notisen med föregående kabelsessions bil
+        # och plan. Kantstyrd på egen tracker (_last_connector_status: Available → Preparing),
+        # så anropet i _async_update_data() kör inte identifieringen en gång till.
+        self._check_vehicle_auto_detect()
         self._update_soc_from_ha()
         self._update_smart_charging()
         self._check_notify_events()
