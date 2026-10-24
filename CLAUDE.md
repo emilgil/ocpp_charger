@@ -780,6 +780,21 @@ delad valideringshjälpare `_plug_entity_error()`. Fältet har medvetet **ingen*
 värdet när frontend utelämnar ett tömt fält, så en sparad sensor skulle aldrig gå att ta bort
 (samma lärdom som `syslog_host`, Feature 9).
 
+### Identifiering före Inkopplad-notisen (Bug 57)
+Skoda kopplades in 2026-10-23 17:37 men "🔌 Laddkabel inkopplad" visade Kia eNiro med Kias SOC och plan. Notisen byggs i
+`_check_notify_events()` direkt på OCPP-pushen (`Preparing`), medan `_check_vehicle_auto_detect()` bara kördes i
+`_async_update_data()` – nästa poll, 60 s med `Available`, och varje push skjuter pollen ett helt intervall. Identifieringen
+(plug-sensor, 17:38:56) kom 95 s efter inkopplingen, långt efter notisen.
+- **Fix:** `_on_charger_state_update_async()` anropar `_check_vehicle_auto_detect()` mellan `_apply_current_schedule()` och
+  `_update_soc_from_ha()`, före `_check_notify_events()` (samma ordning som pollen). Anropet i `_async_update_data()` ligger kvar.
+- **Ingen dubbelkörning:** funktionen triggar bara på `Available → Preparing` mot `_last_connector_status` och sätter den sist;
+  den som körs först (push) konsumerar kanten. Omstart (`""` → `Preparing`) triggar inte, som förut.
+- **Följder:** `set_active_vehicle()` nollar planen och räknar om (Bug 49) → notisen får nya bilens plan/SOC; Bug 41-flaggan
+  konsumeras av genuin-inkopplingsgrenen i samma push; Feature 10-väntefönstret och `_wake_vehicles()` startar vid inkopplingen.
+- **Kvarvarande (ej i fixen):** slår en plug-sensor om under väntefönstret och pekar ut en annan bil uppdateras den redan skickade
+  notisen inte (möjlig uppföljning: skicka om `on_cable_connected`, samma tag ersätter).
+- **Tester:** `tests/test_bug57.py` (7, rot-venv).
+
 ### Väckning av bilen vid väntefönstret (Feature 10c)
 Varje fordon kan också få ett valfritt fält `wake_action` (`VEHICLE_WAKE_ACTION`), direkt efter
 `plug_entity` i schemat/lagringen (samma tre ställen, samma no-`default=`-mönster). Ett format
