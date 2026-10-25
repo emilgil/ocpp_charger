@@ -796,6 +796,17 @@ Skoda kopplades in 2026-10-23 17:37 men "🔌 Laddkabel inkopplad" visade Kia eN
 - **Tester:** `tests/test_bug57.py` (7, rot-venv).
 - **Mergad (PR #43, 00be2d7) och deployad 2026-10-24 11:11** (`__init__.py` via `scp`, `ha core restart`, kabel ur, ingen laddning pågick): ren omstart, laddaren återanslöt, 0 fel. **Live-verifierad 2026-10-24 15:48:31** (Skoda inkopplad): `Preparing`-push → `[SOC] Refreshed on cable connect` → `[VehicleDetect]` (SOC-fallback, plug-sensorn `off`) → `Genuine connect` → notis med Skoda, allt i samma sekund; plug-sensorn slog om först 15:48:46 (`[AutoDetect]`, ingen bilbyte); inget andra `Refreshed on cable connect` vid nästa poll. Ej observerat: plug-sensor som pekar ut en *annan* bil än fallbacken (känd lucka).
 
+### ETA uppdateras vid varje push (Bug 58)
+`estimated_completion`/`estimated_remaining_minutes` (Planned Charge End, Klar, Återstår) sätts av `_update_eta()`, som tidigare bara kördes i
+`_async_update_data()`. Setter-vägar (deadline-lyssnaren Bug 39, `set_allow_day_charging()`, `set_target_soc()`, `set_charge_mode()`, …) räknar om
+`charge_plan` och pushar via `async_set_updated_data()` utan ETA → Start (läser `charge_plan.start`) uppdaterades direkt men Stopp/Återstår/Klar
+låg kvar tills nästa poll (varje push nollställer dessutom pollningstimern; 2026-10-25 21:17 gav 2 min 23 s).
+- **Fix:** `OCPPCoordinator.async_set_updated_data()` är överlagrad och kör `_update_eta()` före `super()`; fel loggas (`[Bug58]`) och stoppar inte
+  pushen; hoppas över om `self.ocpp` ännu saknas. Pollvägen går inte via den och anropar `_update_eta()` som förut.
+- **Följd:** under laddning räknas ETA även vid varje OCPP-uppdatering (samma formel, oftare). Rör inte styrlogik, planerare eller Bug 34-semantiken (Stopp = ETA).
+- **Tester:** `tests/test_bug58.py` (6, rot-venv).
+- **Deployad 2026-10-25 21:32, live-verifierad** (deadline-helper 02:00 → Start/Stopp ändrades samtidigt inom 3 s). Ej observerat under pågående laddning.
+
 ### Väckning av bilen vid väntefönstret (Feature 10c)
 Varje fordon kan också få ett valfritt fält `wake_action` (`VEHICLE_WAKE_ACTION`), direkt efter
 `plug_entity` i schemat/lagringen (samma tre ställen, samma no-`default=`-mönster). Ett format

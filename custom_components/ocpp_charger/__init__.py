@@ -1630,6 +1630,21 @@ class OCPPCoordinator(DataUpdateCoordinator):
             f"{self.current_price:.2f}" if self.current_price is not None else "N/A",
             self.ocpp.state.accumulated_cost)
 
+    @callback
+    def async_set_updated_data(self, data) -> None:
+        """Bug 58: räkna om ETA innan entiteterna pushas.
+
+        Setter-vägar ändrar charge_plan utan att gå via _async_update_data(), så
+        Planned Charge End / Estimated Completion / Remaining låg kvar på förra planen
+        tills nästa poll (som dessutom skjuts upp av varje push).
+        """
+        if getattr(self, "ocpp", None) is not None:
+            try:
+                self._update_eta()
+            except Exception:  # får aldrig hindra pushen
+                _LOGGER.exception("[Bug58] _update_eta misslyckades vid push")
+        super().async_set_updated_data(data)
+
     def _update_eta(self) -> None:
         """Recalculate estimated completion time.
 
