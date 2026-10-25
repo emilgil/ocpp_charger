@@ -1,5 +1,19 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-10-25: Bug 58 – Stopp/Återstår/Klar följer planen direkt vid ändring från UI
+
+Efter ändring av dagladdning eller sluttid i UI uppdaterades Start direkt (läser `charge_plan.start`), men Stopp, Återstår och Klar låg kvar
+på förra planen i upp till ~2,5 min (Stopp kunde hamna före Start). De läser `estimated_completion`/`estimated_remaining_minutes`, som bara
+`_update_eta()` sätter, och den kördes bara i pollcykeln; alla setter-vägar (deadline-lyssnaren, `set_allow_day_charging()` m.fl.) pushade
+till entiteterna utan ETA-omräkning, och varje push nollställde dessutom pollningstimern.
+- `__init__.py`: `OCPPCoordinator.async_set_updated_data()` överlagrad – kör `_update_eta()` (i try/except, loggar `[Bug58]` vid fel) före `super()`.
+  Täcker alla push-vägar med en ändring. Styrlogik, planerare och sensorer oförändrade.
+- **Tester:** ny `tests/test_bug58.py` (6, rot-venv); övriga koordinatorsviter oförändrade.
+- **Deploy 2026-10-25 21:32** (`__init__.py` via `scp`, `ha core restart`, kabel ur): ren omstart. **Live-verifierat:** deadline 00:00 → 02:00 gav
+  Start 22:30 / Stopp 02:00 inom 3 s (samma tidsstämpel), tillbaka till 00:00 → 00:15 / 03:45. Under laddning oförändrat beteende väntas
+  (ETA räknas oftare, samma formel) – ej observerat.
+- Bilaga i specen: Elpris-grafens ~1 h förskjutna x-axel söndag 25/10 är sannolikt sommartidsövergången i apexcharts (ingen kodändring).
+
 ## 2026-10-18: Bug 54 + 55 + 56 – stoppnotis när bilen stannar själv, vid urkoppling och vid mål nått
 
 **Bug 54 (flaggrace):** mål-nått-grenen sätter `_goal_reached_stop` och skickar RemoteStop medan laddningen ännu pågår;
