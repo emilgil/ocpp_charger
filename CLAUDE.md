@@ -794,7 +794,7 @@ Skoda kopplades in 2026-10-23 17:37 men "🔌 Laddkabel inkopplad" visade Kia eN
 - **Kvarvarande (ej i fixen):** slår en plug-sensor om under väntefönstret och pekar ut en annan bil uppdateras den redan skickade
   notisen inte (möjlig uppföljning: skicka om `on_cable_connected`, samma tag ersätter).
 - **Tester:** `tests/test_bug57.py` (7, rot-venv).
-- **Mergad (PR #43, 00be2d7) och deployad 2026-10-24 11:11** (`__init__.py` via `scp`, `ha core restart`, kabel ur, ingen laddning pågick): ren omstart, laddaren återanslöt, 0 fel. **Live-verifiering av själva fixen återstår:** nästa inkoppling ska ge `[VehicleDetect]`/`[AutoDetect]` i samma sekund som `Genuine connect`, före `[Notify] EV Laddning – Inkopplad`, och ingen `[SOC] Refreshed on cable connect` vid nästa poll.
+- **Mergad (PR #43, 00be2d7) och deployad 2026-10-24 11:11** (`__init__.py` via `scp`, `ha core restart`, kabel ur, ingen laddning pågick): ren omstart, laddaren återanslöt, 0 fel. **Live-verifierad 2026-10-24 15:48:31** (Skoda inkopplad): `Preparing`-push → `[SOC] Refreshed on cable connect` → `[VehicleDetect]` (SOC-fallback, plug-sensorn `off`) → `Genuine connect` → notis med Skoda, allt i samma sekund; plug-sensorn slog om först 15:48:46 (`[AutoDetect]`, ingen bilbyte); inget andra `Refreshed on cable connect` vid nästa poll. Ej observerat: plug-sensor som pekar ut en *annan* bil än fallbacken (känd lucka).
 
 ### Väckning av bilen vid väntefönstret (Feature 10c)
 Varje fordon kan också få ett valfritt fält `wake_action` (`VEHICLE_WAKE_ACTION`), direkt efter
