@@ -807,6 +807,14 @@ låg kvar tills nästa poll (varje push nollställer dessutom pollningstimern; 2
 - **Tester:** `tests/test_bug58.py` (6, rot-venv).
 - **Deployad 2026-10-25 21:32, live-verifierad** (deadline-helper 02:00 → Start/Stopp ändrades samtidigt inom 3 s). Ej observerat under pågående laddning.
 
+### Helg avgörs av nästa deadline-morgon (Bug 59)
+`compute_deadline()` (`deadline.py`) avgjorde tidigare helg på `now_local.weekday()`. Söndag kväll gav slutet av prisdatan i stället för måndag 06:00 (och fredag efter 06:00
+gav lördag 06:00). Nu beräknas `next_morning` (nästa `deadline_hour`, rullar till imorgon om passerad eller exakt nu) och dess veckodag avgör: lör/sön → slutet av prisdatan
++ 15 min (annars `now + 48h`), annars `next_morning`. Prioritet 1 (manuell sluttid) och 2 (`allow_day_charging`) oförändrade. Pristaksläget och ordinarie planerare går båda via
+`_compute_deadline()` och rättas därmed.
+- **Tester:** `tests/test_bug59.py` (13). pytest fungerar inte i `ocpp_charger/` (paketimportfel); kör testfiler som skript med rot-venv.
+- **Deployad 2026-11-01 21:50, live-verifierad** (sön 21:52: `deadline=2026-11-02 06:00`). Kvar: fredag efter 06:00.
+
 ### Väckning av bilen vid väntefönstret (Feature 10c)
 Varje fordon kan också få ett valfritt fält `wake_action` (`VEHICLE_WAKE_ACTION`), direkt efter
 `plug_entity` i schemat/lagringen (samma tre ställen, samma no-`default=`-mönster). Ett format
