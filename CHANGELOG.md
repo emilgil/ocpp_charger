@@ -1,5 +1,16 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-11-01: Bug 59 – Söndagskväll räknades som helg: laddfönstret hamnade måndag kväll
+
+`compute_deadline()` avgjorde helg på **dagens** veckodag. Söndag kväll gav därför deadline = slutet av prisdatan (måndag 24:00) i stället för måndag 06:00,
+och billigare måndagskvällsslots tog över från natten söndag→måndag (laddmål 55 % vs 60 % gav olika dygn). Spegelfel på fredagar (efter 06:00 → lördag 06:00).
+- `deadline.py`: helg avgörs av veckodagen för nästa kommande `deadline_hour` (`next_morning`). Sön kväll → mån 06:00; fre efter 06:00 → slutet av prisdatan.
+  Manuell sluttid och `allow_day_charging` oförändrade; `__init__.py` och planeraren orörda.
+- **Tester:** ny `tests/test_bug59.py` (13 fall inkl. DST); `tests/test_deadline.py` oförändrad och grön. OBS: pytest går inte att köra i den här katalogen
+  (föräldramappens `__init__.py` ger paketimportfel) – testfilerna körs som skript med rot-venv.
+- **Mergad (PR #47) och deployad 2026-11-01 21:50** (`deadline.py` via `scp`, `ha core restart`). **Live-verifierat 21:52:** `Planning: … deadline=2026-11-02 06:00`
+  på söndagskvällen (var 00:06 med manuell sluttid före omstart), 0 fel. **Kvar:** fredag efter 06:00 (förväntat: slutet av prisdatan).
+
 ## 2026-10-25: Bug 58 – Stopp/Återstår/Klar följer planen direkt vid ändring från UI
 
 Efter ändring av dagladdning eller sluttid i UI uppdaterades Start direkt (läser `charge_plan.start`), men Stopp, Återstår och Klar låg kvar
