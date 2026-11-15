@@ -16,6 +16,11 @@ Närvaro-trackers, hemma-zoner, tidigaste timme för dagerbjudandet och sluttid-
 - Koordinatorn läser värdena ur `entry.data`; `_someone_home()` bygger hemma-states av `home` + valda zoners visningsnamn. Tom närvarolista = dagerbjudandet av (ny skip-orsak). Bug 39-lyssnaren registreras bara när helpern är vald.
 - **Befintliga installationer startar tomma** – efter deploy: options → fyll i båda menyvalen → Save and close. Tills dess: inget dagerbjudande och automatisk deadline.
 - **Tester:** `tests/test_bug60.py`, `tests/test_bug60_config_flow.py`; `make_coordinator(entry_data=…)` i harnessen. Hela sviten grön.
+- **Mergad (PR #49) och deployad 2026-11-15 18:39** (`*.py`, `strings.json`, `translations/sv.json` via `scp`, `ha core restart`, ingen laddning pågick).
+  **Live-verifierat:** direkt efter omstart `[Bug60] … av (ingen närvaroentitet)` och `Ingen sluttid-helper konfigurerad`, 0 fel. Efter options 21:13:
+  `Dagerbjudande: 3 närvaroentiteter, zoner=['zone.framsidan'], från 09:00` och `Sluttid-helper: input_datetime.charger_target_time`.
+  Helperändring 21:14 → `[Deadline] … 00:00:00 → 08:00:00, planerar om` och `deadline=2026-11-16 08:00` direkt (Bug 39-lyssnaren fungerar mot vald helper).
+  **Kvar:** tömt helper-fält i options sparas som tomt (punkt 4), samt dagerbjudandet en vardag efter kl. 09 med kabel i (punkt 5; `[Presence]`-raden syns först då).
 
 ## 2026-11-01: Bug 59 – Söndagskväll räknades som helg: laddfönstret hamnade måndag kväll
 

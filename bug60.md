@@ -1,7 +1,7 @@
 # Bug 60 – Hårdkodade entiteter i const.py (närvaro, hemma-zon, starttimme, sluttid-helper)
 
 **Datum:** 2026-11-14
-**Status:** Implementerad lokalt, tester gröna – ej deployad
+**Status:** Deployad 2026-11-15 (PR #49). Live-verifierad: punkt 1–3. Kvar: punkt 4 (töm helper-fältet) och 5 (dagerbjudande en vardag efter kl. 09)
 **Beroenden:** Bug 18 (närvarobaserat dagladdningserbjudande), Feature 6 (sluttid via `input_datetime`), Bug 39 (lyssnare på helpern). Oberoende av Feature 12 (Skoda).
 
 ---
