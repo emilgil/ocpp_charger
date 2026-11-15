@@ -46,8 +46,8 @@ dag/natt-schema och SOC-mål som gränser). Sätt till 0 för vanlig billigaste-
 ## Manuell deadline (valfritt)
 
 Vill du sätta en egen sluttid för laddningen, skapa en **Tid-helper** i HA
-(Inställningar → Enheter & tjänster → Hjälpare → Lägg till → Tid) med entitets-id
-`input_datetime.charger_target_time`. Sätt klockslaget (t.ex. `07:30`) så planeras laddningen
+(Inställningar → Enheter & tjänster → Hjälpare → Lägg till → Tid) och välj den
+sedan under integrationens options ("Edit deadline helper"). Sätt klockslaget (t.ex. `07:30`) så planeras laddningen
 klar till dess; har tiden redan passerat idag används samma tid imorgon. Lämna den på `00:00`
 (eller låt bli att skapa den) för automatisk deadline (vardag 06:00, helg/dag = slutet av prisdata).
 Helpern nollställs automatiskt till `00:00` när kabeln kopplas ur.

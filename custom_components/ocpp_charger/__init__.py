@@ -50,7 +50,11 @@ from .const import (
     CONF_NOTIFY_ON_STOP,
     CONF_NOTIFY_DASHBOARD_URL,
     DEFAULT_CHARGE_DEADLINE_HOUR,
-    INPUT_DATETIME_DEADLINE,
+    CONF_DEADLINE_ENTITY,
+    CONF_DAY_OFFER_EARLIEST_HOUR,
+    CONF_PRESENCE_ENTITIES,
+    CONF_PRESENCE_ZONES,
+    DEFAULT_DAY_OFFER_EARLIEST_HOUR,
     SENSOR_PLAN_START,
     SENSOR_PLAN_END,
     DEFAULT_MQTT_PREFIX,
@@ -62,9 +66,6 @@ from .const import (
     CHARGE_MODE_IMMEDIATE,
     CHARGE_MODE_SMART,
     SWITCH_ALLOW_DAY_CHARGING,
-    DAY_OFFER_EARLIEST_HOUR,
-    PRESENCE_ENTITIES,
-    PRESENCE_HOME_STATES,
     NOTIFY_ACTION_USE_DAY,
     NOTIFY_ACTION_USE_NIGHT,
     NOTIFY_ACTION_DISMISS,
@@ -237,7 +238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.bus.async_listen("mobile_app_notification_action", _handle_notification_action)
     )
 
-    # Bug 39: input_datetime.charger_target_time saknade en state-lyssnare — deadline
+    # Bug 39: the input_datetime deadline helper saknade en state-lyssnare — deadline
     # lästes bara på begäran (_get_manual_deadline_str), så en ändring syntes i
     # Laddfönster-grafen/sensorn först vid nästa oberoende _update_charge_plan()-anrop
     # (periodisk poll, OCPP-event etc.), inte omedelbart som pristaket (set_price_cap).
@@ -257,11 +258,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator._update_charge_plan()
         coordinator.async_set_updated_data(coordinator.ocpp.state)
 
-    entry.async_on_unload(
-        async_track_state_change_event(
-            hass, [coordinator._deadline_entity_id], _handle_deadline_change,
+    if coordinator._deadline_entity_id:
+        entry.async_on_unload(
+            async_track_state_change_event(
+                hass, [coordinator._deadline_entity_id], _handle_deadline_change,
+            )
         )
-    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -485,7 +487,28 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self.allow_day_charging: bool = self._compute_allow_day_charging()
         # Feature 6: manual deadline now comes from the input_datetime helper
         # (read on demand via _get_manual_deadline_str), not an in-memory string.
-        self._deadline_entity_id: str = INPUT_DATETIME_DEADLINE
+        # Bug 60: helper, presence and day-offer hour come from options (entry.data).
+        self._deadline_entity_id: str = str(self.config.get(CONF_DEADLINE_ENTITY, "") or "")
+        self._presence_entities: list[str] = list(self.config.get(CONF_PRESENCE_ENTITIES, []) or [])
+        self._presence_zones: list[str] = list(self.config.get(CONF_PRESENCE_ZONES, []) or [])
+        try:
+            _hour = int(self.config.get(CONF_DAY_OFFER_EARLIEST_HOUR, DEFAULT_DAY_OFFER_EARLIEST_HOUR))
+            if not 0 <= _hour <= 23:
+                raise ValueError(_hour)
+        except (TypeError, ValueError):
+            _hour = DEFAULT_DAY_OFFER_EARLIEST_HOUR
+        self._day_offer_earliest_hour: int = _hour
+        if self._deadline_entity_id:
+            _LOGGER.debug("[Bug60] Sluttid-helper: %s", self._deadline_entity_id)
+        else:
+            _LOGGER.debug("[Bug60] Ingen sluttid-helper konfigurerad – automatisk deadline")
+        if self._presence_entities:
+            _LOGGER.debug(
+                "[Bug60] Dagerbjudande: %d närvaroentiteter, zoner=%s, från %02d:00",
+                len(self._presence_entities), self._presence_zones, self._day_offer_earliest_hour,
+            )
+        else:
+            _LOGGER.debug("[Bug60] Dagerbjudande: av (ingen närvaroentitet)")
 
         # Feature 5: price cap charging (0 = disabled → ordinary Smart planning)
         self.price_cap_ore_kwh: float = 0.0
@@ -1981,6 +2004,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
         Returns 'HH:MM' when the helper is set to a non-midnight time, otherwise
         '' (= automatic deadline). 00:00 / missing / unknown all mean "unset".
         """
+        if not self._deadline_entity_id:
+            return ""
         state = self.hass.states.get(self._deadline_entity_id)
         return helper_state_to_hhmm(state.state if state is not None else None)
 
@@ -1990,7 +2015,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         Guarded: only fires the service call if the helper exists, so a missing
         helper can't spam errors. Called on cable disconnect (Available).
         """
-        if self.hass.states.get(self._deadline_entity_id) is None:
+        if not self._deadline_entity_id or self.hass.states.get(self._deadline_entity_id) is None:
             return
         self.hass.async_create_task(
             self.hass.services.async_call(
@@ -2024,15 +2049,25 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
     def _someone_home(self) -> bool:
         """Return True if any tracked person/vehicle is currently home."""
+        if not self._presence_entities:
+            return False
+        home_states = {"home"}
+        for zone_id in self._presence_zones:
+            zst = self.hass.states.get(zone_id)
+            if zst is None:
+                continue
+            name = zst.name
+            if name:
+                home_states.add(str(name).lower())
         home = False
         seen: list[str] = []
-        for entity_id in PRESENCE_ENTITIES:
+        for entity_id in self._presence_entities:
             st = self.hass.states.get(entity_id)
             state = st.state if st is not None else "<missing>"
             seen.append(f"{entity_id}={state}")
-            if st is not None and st.state.lower() in PRESENCE_HOME_STATES:
+            if st is not None and st.state.lower() in home_states:
                 home = True
-        _LOGGER.debug("[Presence] someone_home=%s (%s)", home, ", ".join(seen))
+        _LOGGER.debug("[Presence] someone_home=%s (%s) home_states=%s", home, ", ".join(seen), sorted(home_states))
         return home
 
     def _check_notify_events(self) -> None:
@@ -2711,7 +2746,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
         elif not self.allow_day_charging and not self._force_day_plan:
             someone_home = self._someone_home()
             skip_reason = None
-            if self._day_charging_dismissed:
+            if not self._presence_entities:
+                skip_reason = "no presence entities configured"
+            elif self._day_charging_dismissed:
                 skip_reason = "day-choice dismissed this cable session"
             elif not self.ocpp.state.cable_connected:
                 skip_reason = "cable not connected"
@@ -2719,8 +2756,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 skip_reason = "no energy needed"
             elif not (self.charge_plan and self.charge_plan.feasible):
                 skip_reason = "no feasible night plan"
-            elif now_local.hour < DAY_OFFER_EARLIEST_HOUR:
-                skip_reason = f"before {DAY_OFFER_EARLIEST_HOUR:02d}:00"
+            elif now_local.hour < self._day_offer_earliest_hour:
+                skip_reason = f"before {self._day_offer_earliest_hour:02d}:00"
             elif self._day_offer_notified_date == now_local.date():
                 skip_reason = "already offered today"
             elif not someone_home:
@@ -2756,7 +2793,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
                 ):
                     _LOGGER.info(
                         "[ChargePlanner] Hemma efter %02d:00 och dag (%.1f öre/kWh) billigare än natt (%.1f öre/kWh) – skickar erbjudande",
-                        DAY_OFFER_EARLIEST_HOUR,
+                        self._day_offer_earliest_hour,
                         day_plan.avg_price_ore_kwh,
                         night_plan.avg_price_ore_kwh,
                     )

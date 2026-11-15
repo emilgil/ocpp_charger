@@ -424,7 +424,10 @@ _charging_started_at: datetime | None     # Bug 34: fryst faktisk laddstartstid 
 _day_offer_notified_date: date | None     # Bug 18: en närvarobaserad dagladdningsnotis per kalenderdag
 _day_charging_dismissed: bool             # Bug 3/21: användaren tryckt "🚫 Avsluta"
 _day_charging_dismissed_until: datetime | None  # Bug 21: nollställs vid lokal midnatt
-_deadline_entity_id: str                  # Feature 6: "input_datetime.charger_target_time" (deadline läses därifrån)
+_deadline_entity_id: str                  # Feature 6 / Bug 60: input_datetime-helper från options ("" = automatisk deadline)
+_presence_entities: list[str]             # Bug 60: trackers/personer för dagerbjudandet ([] = erbjudandet av)
+_presence_zones: list[str]                # Bug 60: extra zoner som räknas som hemma (utöver state "home")
+_day_offer_earliest_hour: int             # Bug 60: tidigaste timme för dagerbjudandet (standard 9)
 price_cap_ore_kwh: float                  # Feature 5: pristak öre/kWh (persisterad via Store), 0 = av
 _price_cap_intervals: list[tuple]         # Feature 5: frusna planfönster för pristaksplanen
 _price_cap_raw_slots: list[dict]          # Feature 5: [{time, price_kwh, energy_kwh}] för sensorn
@@ -484,7 +487,7 @@ _selection_notified: bool                 # Feature 10: vals-notisen skickad den
 
 ### Manuell deadline (HA-helper, ingen egen entitet)
 Feature 6 tog bort `text.*_manual_deadline`. Deadlinen sätts nu i HA-helpern
-`input_datetime.charger_target_time` (skapas manuellt; `00:00` = automatisk). Se avsnittet
+en `input_datetime`-helper som väljs i options (Bug 60; skapas manuellt, typ "Tid"; `00:00` = automatisk). Se avsnittet
 "Manuell deadline (Feature 4 → Feature 6)".
 
 ### Number-entiteter (6 st)
@@ -559,7 +562,7 @@ Live-verifierad: `[Notify] Cleared cable-connected notification` avfyrades vid n
 `Available`-övergång efter deploy.
 
 ### Närvarobaserat dagladdningserbjudande (Bug 18)
-När `allow_day_charging` är av (vardagars autoschema) men kabeln är inkopplad och någon av `PRESENCE_ENTITIES` (telefon/bilar, se `const.py`) är hemma efter `DAY_OFFER_EARLIEST_HOUR` (09:00), skickas `on_day_charging_chosen` **om** en dag-plan faktiskt blir billigare per kWh än natt-planen. Jämförelsen använder `avg_price_ore_kwh` (inte `estimated_cost_sek`), så en partiell natt-plan (innan morgondagens priser publicerats) suppresserar inte erbjudandet (Bug 17). Max en gång per kalenderdag (`_day_offer_notified_date`). "☀️ Dag"-knappen sätter `_force_day_plan=True`.
+När `allow_day_charging` är av (vardagars autoschema) men kabeln är inkopplad och någon av `presence_entities` (options, "Edit daytime offer settings") är hemma efter `day_offer_earliest_hour` (standard 09:00; Bug 60). Tom närvarolista = erbjudandet av. "Hemma" = state `home` eller visningsnamnet på en vald zon (`presence_zones`), skickas `on_day_charging_chosen` **om** en dag-plan faktiskt blir billigare per kWh än natt-planen. Jämförelsen använder `avg_price_ore_kwh` (inte `estimated_cost_sek`), så en partiell natt-plan (innan morgondagens priser publicerats) suppresserar inte erbjudandet (Bug 17). Max en gång per kalenderdag (`_day_offer_notified_date`). "☀️ Dag"-knappen sätter `_force_day_plan=True`.
 
 ## OCPP-services (Developer Tools → Actions)
 | Service | Beskrivning |
@@ -616,7 +619,7 @@ slots explicit via `_clear_immediate_plan()` när inget fönster ska visas (kabe
 byte till annat läge).
 
 ## Manuell deadline (Feature 4 → Feature 6)
-Den manuella laddningsdeadlinen sätts via HA-helpern `input_datetime.charger_target_time`
+Den manuella laddningsdeadlinen sätts via en HA-helper som väljs i options (`deadline_entity`, Bug 60)
 (`has_time=True`, `has_date=False`). **Feature 6** ersatte den tidigare egna `ManualDeadlineText`
 (`text.py`, borttagen). `00:00` = "ej satt" → automatiskt beteende (vardag 06:00, helg/dag slutet av
 prisdata); valt klockslag används annars, rullar till imorgon om passerat.
@@ -838,7 +841,7 @@ Samma metod återanvänds (med en lista på ett enda fordon) av `_wake_active_ve
 laddstopp-flödet, se Bug 48 nedan.
 
 **Kända begränsningar:** sensorn visar "inkopplad någonstans", inte i just den här laddaren –
-en förbättring vore att kombinera med `device_tracker` (`PRESENCE_ENTITIES`). Molnsensorer kan
+en förbättring vore att kombinera med `device_tracker` (`presence_entities`). Molnsensorer kan
 ligga efter i tiden (observerat live 2026-09-22: OCPP-SoC-fallbacken matchade fel bil när Kians
 molnsensor inte hunnit ikapp inom 60 s – notisen bad då korrekt användaren välja). Inget
 väntetillstånd persisteras över en HA-omstart. Ett tidigare bilbyte armerar fortfarande Bug
@@ -908,3 +911,12 @@ verifieras vid kabel-ur (om ingen stopp-notis redan skickats i kabelsessionen).
 | SOC-entitet | `sensor.e_niro_ev_battery_level` |
 | Prisintervall | `sensor.gespot_current_price_se3` |
 | Notiser | `notify.mobile_app_sm_s918b` |
+
+
+## Bug 60 – installationsspecifika värden i options
+`PRESENCE_ENTITIES`, `PRESENCE_HOME_STATES`, `DAY_OFFER_EARLIEST_HOUR` och `INPUT_DATETIME_DEADLINE` är borta ur `const.py`.
+Nycklar i `entry.data` (options → "Edit daytime offer settings" / "Edit deadline helper"): `presence_entities`, `presence_zones`,
+`day_offer_earliest_hour` (0–23, trasigt → 9), `deadline_entity` (måste vara `input_datetime.*`). Nya installationer och
+uppgraderingar startar **tomma**: dagerbjudandet är av och deadline är alltid automatisk tills options fyllts i. Helpern ska vara
+av typen "Tid" – en helper med datum+tid ger state `YYYY-MM-DD HH:MM:SS` som `helper_state_to_hhmm()` tolkar som tom (automatisk).
+Zoner matchas på visningsnamn (så rapporterar en tracker sin zon). Se `bug60.md`, `tests/test_bug60*.py`.

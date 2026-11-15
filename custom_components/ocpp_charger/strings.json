@@ -175,13 +175,37 @@
         "data": {
           "plug_wait_seconds": "Wait for plugged-in sensor (seconds, 0 = don't wait)"
         }
+      },
+      "edit_day_offer": {
+        "title": "Daytime Offer Settings",
+        "description": "Offer day charging when someone is home and day is cheaper than night. Empty tracker list = the offer is off.",
+        "data": {
+          "presence_entities": "Presence entities (trackers/persons)",
+          "presence_zones": "Extra zones that count as home",
+          "day_offer_earliest_hour": "Earliest hour for the offer (0–23)"
+        },
+        "data_description": {
+          "presence_entities": "Empty = the daytime offer is off",
+          "presence_zones": "State `home` always counts; pick zones that should also count as home"
+        }
+      },
+      "edit_deadline": {
+        "title": "Deadline Helper",
+        "description": "Choose the input_datetime helper (type Time) used for a manual charging deadline.",
+        "data": {
+          "deadline_entity": "Deadline helper (input_datetime)"
+        },
+        "data_description": {
+          "deadline_entity": "Empty = always automatic deadline"
+        }
       }
     },
     "error": {
       "rest_username_required": "Username is required for Basic auth",
       "rest_token_required": "Bearer token is required for Bearer auth",
       "plug_entity_invalid": "The plugged-in sensor must be a binary_sensor entity (binary_sensor.…)",
-      "wake_action_invalid": "The wake action must be a button entity (button.…) or a service in the form domain.service"
+      "wake_action_invalid": "The wake action must be a button entity (button.…) or a service in the form domain.service",
+      "deadline_entity_invalid": "The deadline helper must be an input_datetime entity (input_datetime.…)"
     }
   }
 }
