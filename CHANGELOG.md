@@ -1,5 +1,15 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-11-15: Bug 61 – STOP-knappen: auto-start startade om laddningen och energin tappades ur SOC-estimatet
+
+Tryck på STOP i ett öppet planfönster (Smart) stoppade laddningen, men auto-start körde RemoteStart 13 s senare, och de 8,06 kWh som laddats före stoppet försvann ur estimatet så att
+Laddfönster-grafen förlängdes 30 min. Ingen notis kom.
+- `_manual_stop_block` (Store): STOP spärrar auto-start resten av fönstret; hävs av START, äkta urkoppling eller när giltig plan inte täcker nuet (`[Bug61]`-loggrader).
+- Manuellt-stopp-blocket i `_check_notify_events()` flyttat efter Bug 13A/33-ackumuleringen och sätter statusspåraren före returen → energin räknas en gång.
+- Nya notiser: `Laddning stoppad` (direkt vid STOP, `notify_on_stop`) och `Laddning återupptagen` (nästa laddstart, `notify_on_start`). Stopp-sammanfattningen vid urkoppling oförändrad.
+- **Tester:** `tests/test_bug61.py` (20); övriga sviten grön.
+- **Deployad 2026-11-15 ca 19:00** (`__init__.py` + `notifier.py` via `scp`, `ha core restart`): ren omstart, 0 fel. **Live-verifiering kvar** (STOP under öppet planfönster).
+
 ## 2026-11-14: Bug 60 – Hårdkodade entiteter flyttade till options
 Närvaro-trackers, hemma-zoner, tidigaste timme för dagerbjudandet och sluttid-helpern låg som konstanter i `const.py`.
 - Nya options-steg `edit_day_offer` (`presence_entities`, `presence_zones`, `day_offer_earliest_hour`) och `edit_deadline` (`deadline_entity`, måste vara `input_datetime.*`).

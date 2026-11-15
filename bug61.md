@@ -1,7 +1,7 @@
 # Bug 61 – STOP-knappen: auto-start drar igång laddningen igen, och laddad energi tappas ur SOC-estimatet
 
 **Datum:** 2026-11-15 (rev 2 samma dag: notiser, SOC-estimatet)
-**Status:** Specad (väntar på godkännande, ingen kod skriven)
+**Status:** Implementerad och deployad 2026-11-15 (`__init__.py` + `notifier.py`, 20 tester i `tests/test_bug61.py`). Live-verifiering kvar (se "Live-verifiering" nedan).
 **Beroenden:** Bug 14/23 (auto-start-spärrar), Bug 28/31 (fryst sessionsplan), Bug 33 (ackumulering vid Garo-reset), Bug 47 (manuell start). Bug 62 bygger på den här (STOP häver strömbegränsningen, samma "fönstret är slut"-villkor).
 
 ---
