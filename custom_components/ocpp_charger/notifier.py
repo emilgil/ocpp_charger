@@ -142,6 +142,35 @@ class ChargerNotifier:
 
         self._send("EV Laddning – Startad", "\n".join(lines))
 
+    def on_manual_stop(
+        self,
+        energy_kwh: float,
+        soc_pct: float | None,
+        next_start: datetime | None,
+    ) -> None:
+        """Bug 61: användaren stoppade laddningen manuellt."""
+        text = f"Stoppad manuellt. {energy_kwh:.1f} kWh laddat hittills"
+        text += f", SOC ca {soc_pct:.0f} %." if soc_pct is not None else "."
+        if next_start:
+            text += f" Nästa planerade start: {_fmt_time(next_start)}."
+        else:
+            text += " Ingen ny start planerad."
+        self._send("Laddning stoppad", text)
+
+    def on_charging_resumed(
+        self,
+        soc_pct: float | None,
+        power_kw: float,
+        plan_end: datetime | None,
+        manual: bool,
+    ) -> None:
+        """Bug 61: laddningen har kommit igång igen efter ett manuellt stopp."""
+        text = f"Startad {'manuellt' if manual else 'enligt plan'}. {power_kw:.1f} kW"
+        text += f", SOC ca {soc_pct:.0f} %." if soc_pct is not None else "."
+        if plan_end:
+            text += f" Planerat slut: {_fmt_time(plan_end)}."
+        self._send("Laddning återupptagen", text)
+
     def on_charging_stopped(
         self,
         soc_pct: float | None,
