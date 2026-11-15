@@ -493,11 +493,10 @@ en `input_datetime`-helper som väljs i options (Bug 60; skapas manuellt, typ "T
 ### Number-entiteter (6 st)
 | Number | Beskrivning |
 |--------|-------------|
-| Max Charging Current | Övre strömgräns (A) |
 | Target Battery Level | Laddmål i % SOC |
 | Target Energy | Laddmål i kWh (0 = obegränsat) |
 | Battery Capacity | Batterikapacitet kWh |
-| Override Current | Manuell strömgräns vid override |
+| Override Current | Strömbegränsning (A): slidern aktiverar begränsningen och skickar den direkt (Bug 62); visar schemats ström när ingen begränsning gäller |
 | Price Cap | Pristak öre/kWh (0–500, 0 = av). Aktiverar pristaksläge i Smart (Feature 5). Persisterad via Store, rensas vid urkoppling. |
 
 ### Select-entiteter (3 st)
@@ -834,6 +833,13 @@ tappades ur SOC-estimatet (planeraren förlängde fönstret). Spec: `bug61.md`.
   **Live-verifiering kvar** (kräver STOP under ett öppet planfönster): notis `Laddning stoppad`, `[Bug61] Manuellt stopp`, ingen `RemoteStartTransaction` medan fönstret är öppet, samma `Estimerad SOC`-kWh före/efter,
   `[Bug61] Planfönstret är slut` vid fönstrets slut, sedan `Laddning återupptagen` i nästa fönster / vid START. Store-nycklarna syns först vid nästa `_save_state()`.
 - **Öppen punkt (ej i fixen):** `Outside plan window` följt av auto-start 14 s senare när den frysta sessionsplanen (Bug 28) slutar före den omräknade planen. Bug 62 bygger på den här.
+
+### Strömbegränsning via Override Current (Bug 62)
+Override Current-slidern skickade tidigare inget till laddaren när switchen var av, och Max Charging Current skrevs över av `_apply_current_schedule()` inom ~10 s. Spec: `bug62.md`.
+- `async_set_current_override(a)` (klampar 6–`CONF_MAX_CURRENT`) slår på override, skickar via `_apply_current_schedule()`, räknar om planen (`_replan_after_override_change()`, `_update_charge_plan(force=True)` hoppar över 300 s-RemoteStart-frysen) och uppdaterar den frysta sessionsplanen (Bug 28) om nuet ligger i nya planen. `current_limit_at()` följer nu override (planeraren och prispristaksplanen räknar på begränsningen).
+- `async_clear_current_override(reason)` häver: planfönstret slut (efter att laddning skett, `_override_used`), mål nått, STOP, kabel ur (`available_edge`), switch av. Fälten `override_active/override_current_a/override_used` persisteras i Store. Slider ställd utan laddning gäller nästa fönster.
+- **Max Charging Current-entiteten är borttagen** (`MaxCurrentNumber`, `async_set_max_current`, `NUMBER_MAX_CURRENT`); registerposten `…_max_current_limit` rensas i `number.async_setup_entry`. `self.max_current`/`CONF_MAX_CURRENT` kvar.
+- **Tester:** `tests/test_bug62.py` (17, rot-venv). **Deployad 2026-11-15 21:36**, ren omstart, `[Bug62] Tar bort föråldrad entitet` loggad. **Live-verifiering kvar** (slider under laddning, se `bug62.md`); live-dashboarden måste ändras för hand.
 
 ### Väckning av bilen vid väntefönstret (Feature 10c)
 Varje fordon kan också få ett valfritt fält `wake_action` (`VEHICLE_WAKE_ACTION`), direkt efter

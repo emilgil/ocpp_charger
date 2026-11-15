@@ -53,7 +53,6 @@ SENSOR_PRICE = "current_price"
 SENSOR_SESSION_ID = "session_id"
 
 # Number unique id suffixes
-NUMBER_MAX_CURRENT = "max_current_limit"
 NUMBER_TARGET_SOC = "target_soc"
 NUMBER_TARGET_KWH = "target_kwh"
 NUMBER_BATTERY_CAPACITY = "battery_capacity"

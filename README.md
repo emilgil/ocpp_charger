@@ -104,11 +104,10 @@ Helpern nollställs automatiskt till `00:00` när kabeln kopplas ur.
 - **Allow Day Charging** – Aktivera/inaktivera laddning dagtid i Smart-läge
 - **Override Charging Schedule** – Manuell override av dag/natt-schema
 - **Auto Vehicle Detection** – Auto-identifiera fordon vid inkoppling
-- **Max Charging Current** – Sätt övre strömgräns
 - **Target Battery Level** – Hur mycket du vill ladda (% SOC)
 - **Target Energy** – Hur mycket du vill ladda (kWh, 0 = obegränsat). Har prioritet över Target Battery Level när det är satt och nollas när kabeln dras ur
 - **Battery Capacity** – Batterikapacitet för beräkningar
-- **Override Current** – Manuell strömgräns vid schema-override
+- **Override Current** – Begränsa laddströmmen direkt (slår på begränsningen och skickas till laddaren; hävs när fönstret är slut, vid STOP, mål nått eller urkoppling)
 - **Price Cap** – Pristak i öre/kWh för Smart-läget (0 = av, ladda alla intervall under taket)
 
 ## Bilidentifiering

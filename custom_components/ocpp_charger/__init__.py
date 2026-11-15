@@ -549,6 +549,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._manual_start_requested: bool = False             # set when user manually starts charging
         self._manual_stop_requested: bool = False              # set when user manually stops charging
         self._manual_stop_block: bool = False      # Bug 61: STOP spärrar auto-start tills planfönstret är slut
+        self._override_used: bool = False          # Bug 62: en laddning har pågått under strömbegränsningen
         self._resume_notify_pending: bool = False  # Bug 61: skicka "återupptagen"-notis vid nästa laddstart
         self._last_cost_energy_kwh: float = 0.0  # energy at last cost update
         self._notified_connect_session: str | None = None  # avoid duplicate connect notifs
@@ -731,6 +732,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "allow_day_charging": self.allow_day_charging,
             "day_charging_manual_override": self._day_charging_manual_override,
             "manual_stop_block": self._manual_stop_block,   # Bug 61
+            "override_active": self.schedule.override_active,   # Bug 62
+            "override_current_a": self.schedule.override_current_a,   # Bug 62
+            "override_used": self._override_used,   # Bug 62
             "resume_notify_pending": self._resume_notify_pending,   # Bug 61
         }
         if state and state.session_start:
@@ -778,6 +782,11 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self.price_cap_ore_kwh = float(data.get("price_cap_ore_kwh", 0.0))  # Feature 5
             # Bug 61: en omstart mitt i ett spärrat fönster ska inte starta laddningen
             self._manual_stop_block = bool(data.get("manual_stop_block", False))
+            # Bug 62: en omstart mitt i en begränsad laddning ska inte ge schemats ström igen
+            if data.get("override_active"):
+                self.schedule.set_override(True, current_a=float(data.get("override_current_a", self.schedule.override_current_a)))
+                self._override_used = bool(data.get("override_used", False))
+                self._apply_current_schedule()
             self._resume_notify_pending = bool(data.get("resume_notify_pending", False))
             self._last_cost_energy_kwh = data.get("energy_kwh", 0.0)
             if data.get("session_start"):
@@ -1439,6 +1448,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._manual_stop_block = False
             self.hass.async_create_task(self._save_state())
 
+        # Bug 62: strömbegränsningen följer laddningen – markera användning, häv när fönstret är slut.
+        if self.schedule.override_active:
+            if state.charging and not self._override_used:
+                self._override_used = True
+            elif (
+                self._override_used
+                and not state.charging
+                and self.charge_mode == CHARGE_MODE_SMART
+                and self.charge_plan and self.charge_plan.feasible and self.charge_plan.active_intervals
+                and not _auto_start_in_window
+            ):
+                self.hass.async_create_task(self.async_clear_current_override("planfönstret slut"))
+
         if not self.ocpp.state.cable_connected:
             return
 
@@ -1456,6 +1478,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         goal_reason,
                     )
                     self._goal_reached_stop = True   # Bug 50: konsekvent stoppskäl
+                    if self.schedule.override_active:
+                        self.hass.async_create_task(self.async_clear_current_override("mål nått"))
                     self._suspended_ev_since = None
                     self._guarded_remote_stop(now)
                     self._send_stop_notification()
@@ -1534,6 +1558,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
                         return
                     _LOGGER.info("[SmartCharge] Mål nått (%s), stoppar", goal_reason)
                     self._goal_reached_stop = True   # Bug 50
+                    if self.schedule.override_active:
+                        self.hass.async_create_task(self.async_clear_current_override("mål nått"))
                     self._guarded_remote_stop(now_utc)
                 return
 
@@ -1868,6 +1894,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._resume_notify_pending = True      # Bug 61
         _LOGGER.info("[Bug61] Manuellt stopp – auto-start spärrad tills planfönstret är slut")
         await self.ocpp.remote_stop_transaction()
+        await self.async_clear_current_override("manuellt stopp")   # Bug 62
         self._notify_manual_stop()              # Bug 61
         await self._save_state()
         await self.async_refresh()
@@ -1925,13 +1952,42 @@ class OCPPCoordinator(DataUpdateCoordinator):
         _LOGGER.info("[Immediate] Kabeln inkopplad – startar laddning automatiskt")
         await self.async_start_charging()
 
-    async def async_set_max_current(self, current_a: float) -> None:
-        """Update max allowed current."""
-        self.max_current = min(current_a, float(self.config.get(CONF_MAX_CURRENT, 32)))
-        self.current_limit_a = self.max_current
-        if self.ocpp.state.charging:
-            await self.ocpp.set_charging_limit(self.max_current)
+    async def async_set_current_override(self, current_a: float) -> None:
+        """Bug 62: aktivera strömbegränsning och skicka den till laddaren direkt."""
+        limit = max(6.0, min(float(current_a), float(self.config.get(CONF_MAX_CURRENT, 32))))
+        self.schedule.set_override(True, current_a=limit)
+        self._override_used = bool(self.ocpp.state.charging)
+        _LOGGER.info("[Bug62] Strömbegränsning %.0f A aktiverad (laddar=%s)", limit, self._override_used)
+        self._apply_current_schedule()
+        self._replan_after_override_change()
+        await self._save_state()
         await self.async_refresh()
+
+    async def async_clear_current_override(self, reason: str) -> None:
+        """Bug 62: återgå till schemats ström."""
+        if not self.schedule.override_active:
+            return
+        self.schedule.set_override(False)
+        self._override_used = False
+        _LOGGER.info("[Bug62] Strömbegränsning hävd (%s) – schemat gäller", reason)
+        self._apply_current_schedule()
+        self._replan_after_override_change()
+        await self._save_state()
+        await self.async_refresh()
+
+    def _replan_after_override_change(self) -> None:
+        """Bug 62: räkna om planen direkt och låt en aktiv session följa den nya planen."""
+        self._last_plan_update = None
+        self._update_charge_plan(force=True)
+        plan = self.charge_plan
+        now_utc = datetime.now(timezone.utc)
+        if (
+            self.ocpp.state.charging and self._session_plan_intervals is not None
+            and plan and plan.feasible and plan.active_intervals and plan.is_in_window(now_utc)
+        ):
+            self._session_plan_intervals = list(plan.active_intervals)   # Bug 28: uppdatera fryst plan
+            _LOGGER.info("[Bug62] Fryst sessionsplan uppdaterad efter omräkning (%d fönster)",
+                         len(self._session_plan_intervals))
 
     def set_active_vehicle(self, vehicle: dict, *, restore: bool = False) -> None:
         """Switch the active vehicle, updating capacity and SOC entity immediately.
@@ -2185,6 +2241,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._goal_reached_stop = False  # Bug 50
             self._manual_stop_block = False       # Bug 61
             self._resume_notify_pending = False   # Bug 61
+            if self.schedule.override_active:     # Bug 62
+                self.hass.async_create_task(self.async_clear_current_override("kabel ur"))
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
             self._reset_deadline_helper()    # Feature 6: clear manual deadline on disconnect
             self.price_cap_ore_kwh = 0.0     # Feature 5: clear price cap on disconnect
@@ -2458,7 +2516,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._next_day_shift_candidate = None
         self._next_day_shift_accepted = False
 
-    def _update_charge_plan(self) -> None:
+    def _update_charge_plan(self, force: bool = False) -> None:
         """Recalculate the optimal charge window using forecast prices."""
         # Freeze plan for 5 minutes after RemoteStart to avoid oscillation
         now = datetime.now(timezone.utc)
@@ -2473,7 +2531,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._day_charging_dismissed_until = None
         # Bug 42: the freeze protects Smart auto-start/stop from oscillating. In Immediate
         # the plan drives neither, so the window is allowed to stay live.
-        if self._last_remote_start is not None and self.charge_mode != CHARGE_MODE_IMMEDIATE:
+        if not force and self._last_remote_start is not None and self.charge_mode != CHARGE_MODE_IMMEDIATE:
             elapsed = (now - self._last_remote_start).total_seconds()
             if elapsed < 300:
                 _LOGGER.debug("[ChargePlanner] Frozen after RemoteStart (%.0fs < 300s), skipping recalc", elapsed)

@@ -120,17 +120,10 @@ views:
       - type: entities
         title: Schema
         entities:
+          - entity: number.ev_charger_garocs_48671aa056e80_override_current
+            name: Begränsa ström (A)
           - entity: switch.ev_charger_garocs_48671aa056e80_override_charging_schedule
-            name: Manuell override
-          - entity: number.ev_charger_garocs_48671aa056e80_max_charging_current
-            name: Max ström (A)
-          - type: conditional
-            conditions:
-              - entity: switch.ev_charger_garocs_48671aa056e80_override_charging_schedule
-                state: "on"
-            row:
-              entity: number.ev_charger_garocs_48671aa056e80_override_current
-              name: Override-ström (A)
+            name: Begränsning aktiv
 
       # ── 6. LADDPLAN (visas bara i Smart-läge) ─────────────────────────────
       - type: conditional

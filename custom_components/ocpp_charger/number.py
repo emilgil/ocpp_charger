@@ -1,18 +1,21 @@
 """Number platform for OCPP EV Charger."""
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfElectricCurrent
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import OCPPCoordinator
 from .const import CONF_BATTERY_CAPACITY, CONF_CHARGER_ID, CONF_MAX_CURRENT, DEFAULT_BATTERY_CAPACITY_KWH, DOMAIN, NUMBER_PRICE_CAP
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -22,9 +25,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up number entities."""
     coordinator: OCPPCoordinator = hass.data[DOMAIN][entry.entry_id]
+    # Bug 62: Max Charging Current är borttagen – rensa den gamla registerposten
+    ent_reg = er.async_get(hass)
+    old = ent_reg.async_get_entity_id("number", DOMAIN, f"{entry.entry_id}_max_current_limit")
+    if old:
+        _LOGGER.info("[Bug62] Tar bort föråldrad entitet %s", old)
+        ent_reg.async_remove(old)
     async_add_entities(
         [
-            MaxCurrentNumber(coordinator, entry),
             TargetSOCNumber(coordinator, entry),
             TargetKWhNumber(coordinator, entry),
             BatteryCapacityNumber(coordinator, entry),
@@ -39,33 +47,6 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
         identifiers={(DOMAIN, entry.data[CONF_CHARGER_ID])},
         name=f"EV Charger {entry.data[CONF_CHARGER_ID]}",
     )
-
-
-class MaxCurrentNumber(CoordinatorEntity, NumberEntity):
-    """Set maximum charging current."""
-
-    def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator)
-        self._coordinator = coordinator
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_max_current_limit"
-        self._attr_name = "Max Charging Current"
-        self._attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-        self._attr_native_min_value = 6.0
-        self._attr_native_max_value = float(entry.data.get(CONF_MAX_CURRENT, 32))
-        self._attr_native_step = 1.0
-        self._attr_mode = NumberMode.SLIDER
-        self._attr_icon = "mdi:current-ac"
-        self._attr_device_info = _device_info(entry)
-        self._attr_has_entity_name = True
-
-
-    @property
-    def native_value(self) -> float:
-        return self._coordinator.max_current
-
-    async def async_set_native_value(self, value: float) -> None:
-        await self._coordinator.async_set_max_current(value)
 
 
 class TargetSOCNumber(CoordinatorEntity, NumberEntity):
@@ -186,11 +167,7 @@ class PriceCapNumber(CoordinatorEntity, NumberEntity):
 
 
 class OverrideCurrentNumber(CoordinatorEntity, NumberEntity):
-    """Manual current override used when schedule override switch is on.
-
-    When 'New Vehicle' is active this also doubles as the ad-hoc capacity input:
-    changing it immediately updates the active vehicle's capacity.
-    """
+    """Bug 62: current limit slider. Setting it activates the override and sends it to the charger."""
 
     def __init__(self, coordinator: OCPPCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
@@ -210,12 +187,8 @@ class OverrideCurrentNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def native_value(self) -> float:
-        return self._coordinator.schedule.override_current_a
+        s = self._coordinator.schedule
+        return s.override_current_a if s.override_active else s.current_limit()
 
     async def async_set_native_value(self, value: float) -> None:
-        self._coordinator.schedule.set_override(
-            self._coordinator.schedule.override_active, current_a=value
-        )
-        if self._coordinator.schedule.override_active and self._coordinator.ocpp.state.charging:
-            await self._coordinator.ocpp.set_charging_limit(value)
-        self._coordinator.async_set_updated_data(self._coordinator.ocpp.state)
+        await self._coordinator.async_set_current_override(value)
