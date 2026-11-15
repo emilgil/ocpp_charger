@@ -86,12 +86,10 @@ class ScheduleOverrideSwitch(CoordinatorEntity, SwitchEntity):
         }
 
     async def async_turn_on(self, **kwargs) -> None:
-        self._coordinator.schedule.set_override(True)
-        self._coordinator.async_set_updated_data(self._coordinator.ocpp.state)
+        await self._coordinator.async_set_current_override(self._coordinator.schedule.override_current_a)
 
     async def async_turn_off(self, **kwargs) -> None:
-        self._coordinator.schedule.set_override(False)
-        self._coordinator.async_set_updated_data(self._coordinator.ocpp.state)
+        await self._coordinator.async_clear_current_override("switch av")
 
 
 class AllowDayChargingSwitch(CoordinatorEntity, SwitchEntity):

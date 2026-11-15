@@ -61,9 +61,12 @@ class CurrentSchedule:
         """Return the scheduled limit at a specific local datetime.
 
         Used by the charge planner to assign per-interval power.
-        Override is intentionally ignored here – planning always uses
-        the base schedule so the planner reflects real slot capacity.
+        Bug 62: an active override applies to the whole plan while it is
+        active. It is lifted when the window ends, and the plan is then
+        recalculated on the scheduled current.
         """
+        if self.override_active:
+            return self.override_current_a
         return self._scheduled_limit(local_dt.time())
 
     def period_name(self, now: time | None = None) -> str:
