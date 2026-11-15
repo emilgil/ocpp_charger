@@ -184,7 +184,6 @@ _alt_plan: ChargePlan | None              # alternativ plan för jämförelse
 ### Number-entiteter (5 st)
 | Klass | Unique suffix | Namn |
 |-------|---------------|------|
-| MaxCurrentNumber | max_current_limit | Max Charging Current |
 | TargetSOCNumber | target_soc | Target Battery Level |
 | TargetKWhNumber | target_kwh | Target Energy |
 | BatteryCapacityNumber | battery_capacity | Battery Capacity |

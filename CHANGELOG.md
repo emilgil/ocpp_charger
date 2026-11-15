@@ -1,5 +1,14 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-11-15: Bug 62 – Override Current-slidern nådde inte laddaren
+
+Slidern sparade bara värdet när switchen var av; laddaren fortsatte på 16 A. Max Charging Current skrevs över av schemat inom ~10 s.
+- Slidern aktiverar begränsningen och skickar den direkt; planen räknas om på den lägre strömmen (`current_limit_at()` följer override, `_update_charge_plan(force=True)`).
+- Hävs vid fönstrets slut, mål nått, STOP, urkoppling eller switch av; persisteras i Store (`override_active/_current_a/_used`).
+- Entiteten Max Charging Current borttagen (registerposten rensas vid start). `dashboard.yaml` ändrad; live-dashboarden ändras för hand.
+- **Tester:** `tests/test_bug62.py` (17); övriga sviten grön.
+- **Deployad 2026-11-15 21:36** (`__init__.py`, `number.py`, `switch.py`, `current_schedule.py`, `const.py` via `scp`, `ha core restart`, ingen laddning pågick): ren omstart, `[Bug62] Tar bort föråldrad entitet number.…_max_charging_current`. **Live-verifiering kvar** (slider under pågående laddning).
+
 ## 2026-11-15: Bug 61 – STOP-knappen: auto-start startade om laddningen och energin tappades ur SOC-estimatet
 
 Tryck på STOP i ett öppet planfönster (Smart) stoppade laddningen, men auto-start körde RemoteStart 13 s senare, och de 8,06 kWh som laddats före stoppet försvann ur estimatet så att
