@@ -818,6 +818,23 @@ gav lördag 06:00). Nu beräknas `next_morning` (nästa `deadline_hour`, rullar 
 - **Tester:** `tests/test_bug59.py` (13). pytest fungerar inte i `ocpp_charger/` (paketimportfel); kör testfiler som skript med rot-venv.
 - **Deployad 2026-11-01 21:50, live-verifierad** (sön 21:52: `deadline=2026-11-02 06:00`). Kvar: fredag efter 06:00.
 
+### STOP-knappen: spärr mot auto-start + energi bevaras (Bug 61)
+`async_stop_charging()` stoppade men auto-start drog igång laddningen igen inom 10 s så länge planfönstret var öppet, och den avslutade transaktionens energi
+tappades ur SOC-estimatet (planeraren förlängde fönstret). Spec: `bug61.md`.
+- **Spärr:** `_manual_stop_block` sätts av STOP, persisteras i Store (`manual_stop_block`; saknad nyckel → `False`) och gör att auto-start-blocket i `_update_smart_charging()` returnerar
+  (`Auto-start spärrad – manuellt stopp i pågående fönster`). Hävs av **START-knappen**, **äkta urkoppling** (`available_edge`) eller när planen är giltig (`feasible`, har fönster) och nuet
+  ligger utanför alla fönster (`[Bug61] Planfönstret är slut – auto-start tillåts igen`). Saknas plan eller är den infeasible ligger spärren kvar; en förlängd plan som fortfarande täcker nuet likaså.
+- **Energin (rotorsak B):** manuellt-stopp-blocket (`Skippar Inkopplad – manuellt stopp`) i `_check_notify_events()` ligger nu **efter** Bug 13A/33-blocket och sätter `_last_connector_status_notify`
+  före returen, så den avslutade transaktionens energi ackumuleras i `_session_total_kwh` exakt en gång. Bug 41/45-grenarna gäller därmed även efter manuellt stopp.
+- **Notiser:** `on_manual_stop()` skickas direkt vid STOP (styrs av `notify_on_stop`, förbrukar **inte** `_cable_session_stop_notified`); `on_charging_resumed()` skickas vid nästa laddstart
+  (`_resume_notify_pending`, styrs av `notify_on_start`, flaggan nollas ändå) – både START-knappen (`manuellt`) och auto-start i nästa fönster (`enligt plan`). Hjälpare: `_estimated_soc_now()`, `_notify_manual_stop()`.
+- **Immediate:** inget startar om efter STOP där; notiserna gäller ändå. `_manual_stop_requested` (notislogiken) är oförändrad.
+- **Tester:** `tests/test_bug61.py` (20, rot-venv). Obs: `charge_mode` är `"Smart (price-optimised)"` (`CHARGE_MODE_SMART`) och `_update_smart_charging()` har 2 s-debounce (`_last_smart_charge_run`) som tester måste nollställa.
+- **Deployad 2026-11-15 ca 19:00** (`__init__.py` + `notifier.py` via `scp`, `ha core restart`, ingen laddning pågick, `Preparing`/0 W): ren omstart, 0 komponentfel, Bug 45-återanslutningen som väntat.
+  **Live-verifiering kvar** (kräver STOP under ett öppet planfönster): notis `Laddning stoppad`, `[Bug61] Manuellt stopp`, ingen `RemoteStartTransaction` medan fönstret är öppet, samma `Estimerad SOC`-kWh före/efter,
+  `[Bug61] Planfönstret är slut` vid fönstrets slut, sedan `Laddning återupptagen` i nästa fönster / vid START. Store-nycklarna syns först vid nästa `_save_state()`.
+- **Öppen punkt (ej i fixen):** `Outside plan window` följt av auto-start 14 s senare när den frysta sessionsplanen (Bug 28) slutar före den omräknade planen. Bug 62 bygger på den här.
+
 ### Väckning av bilen vid väntefönstret (Feature 10c)
 Varje fordon kan också få ett valfritt fält `wake_action` (`VEHICLE_WAKE_ACTION`), direkt efter
 `plug_entity` i schemat/lagringen (samma tre ställen, samma no-`default=`-mönster). Ett format

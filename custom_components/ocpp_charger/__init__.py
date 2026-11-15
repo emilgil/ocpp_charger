@@ -548,6 +548,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self._soc_reread_done: bool = False                    # Fix 4: True when reread period over
         self._manual_start_requested: bool = False             # set when user manually starts charging
         self._manual_stop_requested: bool = False              # set when user manually stops charging
+        self._manual_stop_block: bool = False      # Bug 61: STOP spärrar auto-start tills planfönstret är slut
+        self._resume_notify_pending: bool = False  # Bug 61: skicka "återupptagen"-notis vid nästa laddstart
         self._last_cost_energy_kwh: float = 0.0  # energy at last cost update
         self._notified_connect_session: str | None = None  # avoid duplicate connect notifs
         self._cable_session_notified_connect: bool = False   # Fix 9: one connect-notif per cable session
@@ -728,6 +730,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             "active_vehicle_name": self.active_vehicle.get(VEHICLE_NAME) if self.active_vehicle else None,
             "allow_day_charging": self.allow_day_charging,
             "day_charging_manual_override": self._day_charging_manual_override,
+            "manual_stop_block": self._manual_stop_block,   # Bug 61
+            "resume_notify_pending": self._resume_notify_pending,   # Bug 61
         }
         if state and state.session_start:
             data["session_start"] = state.session_start.isoformat()
@@ -772,6 +776,9 @@ class OCPPCoordinator(DataUpdateCoordinator):
             # Feature 6: manual deadline lives in the input_datetime helper now;
             # any legacy "manual_deadline" key in old Store data is ignored.
             self.price_cap_ore_kwh = float(data.get("price_cap_ore_kwh", 0.0))  # Feature 5
+            # Bug 61: en omstart mitt i ett spärrat fönster ska inte starta laddningen
+            self._manual_stop_block = bool(data.get("manual_stop_block", False))
+            self._resume_notify_pending = bool(data.get("resume_notify_pending", False))
             self._last_cost_energy_kwh = data.get("energy_kwh", 0.0)
             if data.get("session_start"):
                 try:
@@ -1419,6 +1426,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     state.charging,
                 )
 
+        # Bug 61: spärren gäller bara det planfönster som var öppet vid STOP.
+        # Hävs först när en giltig plan finns och nuet ligger utanför alla fönster.
+        if (
+            self._manual_stop_block
+            and not state.charging
+            and self.charge_mode == CHARGE_MODE_SMART
+            and self.charge_plan and self.charge_plan.feasible and self.charge_plan.active_intervals
+            and not _auto_start_in_window
+        ):
+            _LOGGER.info("[Bug61] Planfönstret är slut – auto-start tillåts igen")
+            self._manual_stop_block = False
+            self.hass.async_create_task(self._save_state())
+
         if not self.ocpp.state.cable_connected:
             return
 
@@ -1452,6 +1472,10 @@ class OCPPCoordinator(DataUpdateCoordinator):
 
         # ── Plan-based auto-start (act only when cable is connected) ─────
         if _auto_start_in_window:
+            # Bug 61: användaren har tryckt STOP i det här fönstret
+            if self._manual_stop_block:
+                _LOGGER.debug("[SmartCharge] Auto-start spärrad – manuellt stopp i pågående fönster")
+                return
             # Bug 23: don't auto-start if the charging goal is already reached.
             # Otherwise auto-start and the goal-reached stop ping-pong every
             # ~5 min (300s RemoteStart guard) while the plan window stays open.
@@ -1829,6 +1853,7 @@ class OCPPCoordinator(DataUpdateCoordinator):
         self.current_limit_a = self.max_current
         await self.ocpp.set_charging_limit(self.max_current)
         self._manual_start_requested = True
+        self._manual_stop_block = False   # Bug 61: START häver spärren
         # Bug 28: freeze current plan windows for this manually-started session.
         if self.charge_plan and self.charge_plan.active_intervals:
             self._session_plan_intervals = list(self.charge_plan.active_intervals)
@@ -1839,8 +1864,48 @@ class OCPPCoordinator(DataUpdateCoordinator):
         """Manually stop charging."""
         self._manual_start_requested = False
         self._manual_stop_requested = True
+        self._manual_stop_block = True          # Bug 61
+        self._resume_notify_pending = True      # Bug 61
+        _LOGGER.info("[Bug61] Manuellt stopp – auto-start spärrad tills planfönstret är slut")
         await self.ocpp.remote_stop_transaction()
+        self._notify_manual_stop()              # Bug 61
+        await self._save_state()
         await self.async_refresh()
+
+    def _estimated_soc_now(self) -> float | None:
+        """Bug 61: samma SOC-estimat som planeraren/mål-koll (None om okänt)."""
+        return estimate_soc(
+            self._session_start_soc,
+            self._session_kwh_delivered(),
+            self.battery_capacity_kwh,
+            DEFAULT_CHARGE_EFFICIENCY,
+            self.ocpp.state.soc_percent,
+        )
+
+    def _notify_manual_stop(self) -> None:
+        """Bug 61: direkt notis när användaren stoppar manuellt (förbrukar inte stopp-notisflaggan)."""
+        if not self._notify_on_stop:
+            return
+        try:
+            plan = self.charge_plan
+            next_start = None
+            if plan and plan.feasible and plan.active_intervals:
+                now_utc = datetime.now(timezone.utc)
+                window_end = now_utc
+                for iv_start, iv_end in plan.active_intervals:
+                    if iv_start <= now_utc <= iv_end:
+                        window_end = iv_end
+                        break
+                next_start = plan.next_start_after(window_end)
+            self.notifier.on_manual_stop(
+                energy_kwh=self._cable_session_energy_kwh + (
+                    self.ocpp.state.energy_kwh if self.ocpp.state.transaction_id is not None else 0.0
+                ),
+                soc_pct=self._estimated_soc_now(),
+                next_start=next_start,
+            )
+        except Exception:  # noqa: BLE001 – notis får aldrig stoppa STOP
+            _LOGGER.exception("[Bug61] Kunde inte skicka stopp-notis")
 
     async def async_start_if_ready(self) -> None:
         """Start charging if cable is connected and charger is idle.
@@ -2118,6 +2183,8 @@ class OCPPCoordinator(DataUpdateCoordinator):
             self._sync_allow_day_charging()
             self._charging_seen_this_session = False  # Bug 10: reset for next connection
             self._goal_reached_stop = False  # Bug 50
+            self._manual_stop_block = False       # Bug 61
+            self._resume_notify_pending = False   # Bug 61
             self._cable_was_available = True  # Bug 13A: genuine cable disconnect
             self._reset_deadline_helper()    # Feature 6: clear manual deadline on disconnect
             self.price_cap_ore_kwh = 0.0     # Feature 5: clear price cap on disconnect
@@ -2130,11 +2197,6 @@ class OCPPCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("[Bug13A] Available → cable_was_available=True")
 
         # ── Cable connected (Preparing) ──────────────────────────────────
-        if status == "Preparing" and self._manual_stop_requested:
-            _LOGGER.debug("[Notify] Skippar Inkopplad – manuellt stopp")
-            self._manual_stop_requested = False
-            return
-
         # Bug 13A: Log when Preparing is skipped due to Garo internal reset
         if (
             status == "Preparing"
@@ -2177,6 +2239,14 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     "Inkopplad-notis (sparar %.3f kWh, _session_total_kwh=%.3f)",
                     self.ocpp.state.energy_kwh, self._session_total_kwh,
                 )
+
+        # Bug 61: ligger efter Bug 13A/33-blocket så att den avslutade transaktionens energi
+        # ackumuleras även efter manuellt stopp.
+        if status == "Preparing" and self._manual_stop_requested:
+            _LOGGER.debug("[Notify] Skippar Inkopplad – manuellt stopp")
+            self._manual_stop_requested = False
+            self._last_connector_status_notify = status   # Bug 61: annars ackumuleras energin en gång till nästa pass
+            return
 
         if (
             self._notify_on_connect
@@ -2275,6 +2345,19 @@ class OCPPCoordinator(DataUpdateCoordinator):
                     plan_end=plan.end if plan and plan.feasible else None,
                     estimated_end=self.estimated_completion,
                 )
+
+        # Bug 61: laddningen har kommit igång igen efter ett manuellt stopp
+        if self._resume_notify_pending and is_charging and state.power_w > 100:
+            self._resume_notify_pending = False
+            if self._notify_on_start:
+                plan = self.charge_plan
+                self.notifier.on_charging_resumed(
+                    soc_pct=self._estimated_soc_now(),
+                    power_kw=state.power_w / 1000,
+                    plan_end=plan.end if plan and plan.feasible else None,
+                    manual=self._manual_start_requested,
+                )
+            self.hass.async_create_task(self._save_state())
 
         # Bug 54: the goal-reached branch sets the flag and sends RemoteStop in the same cycle, while
         # charging is still running (power > 100 W) – skip the reset until the stop has had time to land.
