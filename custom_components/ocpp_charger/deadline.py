@@ -3,7 +3,7 @@
 Pure, stdlib-only helpers (mirrors charge_planner.py) so they can be unit-tested
 standalone without importing Home Assistant.  The coordinator's _compute_deadline
 consumes compute_deadline; _get_manual_deadline_str consumes helper_state_to_hhmm
-to read the input_datetime.charger_target_time helper (Feature 6, replaces the
+to read the input_datetime deadline helper (Feature 6, replaces the
 former ManualDeadlineText entity).
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ def parse_hhmm(value: str) -> tuple[int, int] | None:
 def helper_state_to_hhmm(state: str | None) -> str:
     """Feature 6: convert an ``input_datetime`` (has_time) state to an HH:MM string.
 
-    The ``input_datetime.charger_target_time`` helper reports its state as
+    The ``input_datetime`` deadline helper reports its state as
     ``"HH:MM:SS"``.  ``00:00`` is treated as the "unset" sentinel (midnight is an
     implausible charge deadline) and maps to ``""`` = automatic deadline, as do
     None / unknown / unavailable / unparseable values.  Otherwise returns the

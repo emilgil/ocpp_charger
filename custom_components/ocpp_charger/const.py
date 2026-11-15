@@ -66,10 +66,9 @@ SENSOR_CHARGE_GOAL = "charge_goal"  # Feature 11
 # Feature 7: binary sensor indicating price-cap mode is configured (cap > 0)
 BINARY_SENSOR_PRICE_CAP_ACTIVE = "price_cap_active"
 
-# Feature 6: input_datetime helper for the manual charging deadline
-# (replaces the Feature 4 ManualDeadlineText entity). Must be created manually
-# in HA (Settings → Helpers → Time); the integration only reads/resets it.
-INPUT_DATETIME_DEADLINE = "input_datetime.charger_target_time"
+# Feature 6 / Bug 60: the input_datetime helper for the manual charging deadline
+# is chosen in options (CONF_DEADLINE_ENTITY). Must be created manually in HA
+# (Settings → Helpers → Time, type "Tid"); the integration only reads/resets it.
 
 # Button unique id suffixes
 BUTTON_START = "start_charging"
@@ -224,16 +223,13 @@ SWITCH_DEADLINE_OVERRIDE   = "deadline_override"
 # Presence-based day-charging offer:
 # When allow_day_charging is OFF (weekday auto-schedule) but someone/the car is
 # home after this hour, and a day plan is cheaper than night, offer day charging.
-DAY_OFFER_EARLIEST_HOUR = 9
-PRESENCE_ENTITIES = [
-    "device_tracker.skoda_enyaq_position",
-    "device_tracker.emil_s_s23_ultra",
-    "device_tracker.e_niro_location",
-]
-# A device_tracker counts as "home" when its lowercased state is one of these.
-# GPS trackers report the zone's friendly name (here: "Framsidan"); the router
-# tracker reports "home". Comparison is case-insensitive (see _someone_home).
-PRESENCE_HOME_STATES = {"home", "framsidan"}
+# Bug 60: which trackers/zones count as "home", the earliest hour and the deadline
+# helper are installation-specific and live in options (entry.data), not here.
+DEFAULT_DAY_OFFER_EARLIEST_HOUR = 9
+CONF_PRESENCE_ENTITIES = "presence_entities"            # list[str], [] = offer off
+CONF_PRESENCE_ZONES = "presence_zones"                  # list[str] zone entity_ids
+CONF_DAY_OFFER_EARLIEST_HOUR = "day_offer_earliest_hour"  # int 0-23
+CONF_DEADLINE_ENTITY = "deadline_entity"                # str, "" = automatic deadline
 
 # Actionable notification actions
 NOTIFY_ACTION_USE_DAY        = "ocpp_use_day_charging"

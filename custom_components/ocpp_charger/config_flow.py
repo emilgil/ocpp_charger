@@ -12,6 +12,8 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -22,6 +24,11 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_BATTERY_CAPACITY,
+    CONF_DAY_OFFER_EARLIEST_HOUR,
+    CONF_DEADLINE_ENTITY,
+    CONF_PRESENCE_ENTITIES,
+    CONF_PRESENCE_ZONES,
+    DEFAULT_DAY_OFFER_EARLIEST_HOUR,
     CONF_CHARGER_ID,
     CONF_ELECTRICITY_PRICE_ENTITY,
     CONF_HOST,
@@ -126,6 +133,14 @@ def _plug_entity_error(user_input: dict) -> str | None:
     value = user_input.get(VEHICLE_PLUG_ENTITY, "").strip()
     if value and not value.startswith("binary_sensor."):
         return "plug_entity_invalid"
+    return None
+
+
+def _deadline_entity_error(value: str) -> str | None:
+    """Bug 60: the deadline helper must be empty or an input_datetime entity."""
+    value = (value or "").strip()
+    if value and not value.startswith("input_datetime."):
+        return "deadline_entity_invalid"
     return None
 
 
@@ -389,6 +404,8 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         self._notify_data: dict = {}
         self._logging_data: dict = {}
         self._detection_data: dict = {}
+        self._day_offer_data: dict = {}
+        self._deadline_data: dict = {}
         self._vehicles: list[dict] = copy.deepcopy(
             config_entry.data.get(CONF_VEHICLES, [])
         )
@@ -418,6 +435,10 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_edit_planner()
             elif action == "detection":
                 return await self.async_step_edit_detection()
+            elif action == "day_offer":
+                return await self.async_step_edit_day_offer()
+            elif action == "deadline":
+                return await self.async_step_edit_deadline()
             elif action == "notify":
                 return await self.async_step_edit_notify()
             elif action == "logging":
@@ -436,6 +457,8 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         choices["rest"]     = "🔌 Edit REST API settings"
         choices["planner"]  = "📅 Edit charge planner settings"
         choices["detection"] = "🔎 Edit vehicle detection settings"
+        choices["day_offer"] = "☀️ Edit daytime offer settings"
+        choices["deadline"] = "⏰ Edit deadline helper"
         choices["notify"]   = "🔔 Edit notification settings"
         choices["logging"]  = "📝 Edit logging settings"
         choices["done"]     = "✅ Save and close"
@@ -640,6 +663,58 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
         })
         return self.async_show_form(step_id="edit_detection", data_schema=schema)
 
+    async def async_step_edit_day_offer(
+        self, user_input: dict | None = None
+    ) -> FlowResult:
+        """Bug 60: who counts as home, which zones count as home, earliest offer hour."""
+        if user_input is not None:
+            self._day_offer_data = {
+                CONF_PRESENCE_ENTITIES: list(user_input.get(CONF_PRESENCE_ENTITIES, [])),
+                CONF_PRESENCE_ZONES: list(user_input.get(CONF_PRESENCE_ZONES, [])),
+                CONF_DAY_OFFER_EARLIEST_HOUR: int(
+                    user_input.get(CONF_DAY_OFFER_EARLIEST_HOUR, DEFAULT_DAY_OFFER_EARLIEST_HOUR)
+                ),
+            }
+            return await self.async_step_init()
+
+        cfg = {**self._config_entry.data, **self._day_offer_data}
+        # No default= on the entity fields: suggested_value lets the user clear them.
+        schema = vol.Schema({
+            vol.Optional(CONF_PRESENCE_ENTITIES,
+                description={"suggested_value": cfg.get(CONF_PRESENCE_ENTITIES, [])}): EntitySelector(
+                    EntitySelectorConfig(domain=["device_tracker", "person"], multiple=True)),
+            vol.Optional(CONF_PRESENCE_ZONES,
+                description={"suggested_value": cfg.get(CONF_PRESENCE_ZONES, [])}): EntitySelector(
+                    EntitySelectorConfig(domain="zone", multiple=True)),
+            vol.Optional(CONF_DAY_OFFER_EARLIEST_HOUR,
+                default=cfg.get(CONF_DAY_OFFER_EARLIEST_HOUR, DEFAULT_DAY_OFFER_EARLIEST_HOUR)): NumberSelector(
+                    NumberSelectorConfig(min=0, max=23, step=1, mode=NumberSelectorMode.BOX)),
+        })
+        return self.async_show_form(step_id="edit_day_offer", data_schema=schema)
+
+    async def async_step_edit_deadline(
+        self, user_input: dict | None = None
+    ) -> FlowResult:
+        """Bug 60: input_datetime helper for the manual deadline (empty = automatic)."""
+        errors: dict[str, str] = {}
+        cfg = {**self._config_entry.data, **self._deadline_data}
+        if user_input is not None:
+            value = (user_input.get(CONF_DEADLINE_ENTITY, "") or "").strip()
+            err = _deadline_entity_error(value)
+            if err:
+                errors[CONF_DEADLINE_ENTITY] = err
+                cfg = {**cfg, CONF_DEADLINE_ENTITY: value}
+            else:
+                self._deadline_data = {CONF_DEADLINE_ENTITY: value}
+                return await self.async_step_init()
+
+        schema = vol.Schema({
+            vol.Optional(CONF_DEADLINE_ENTITY,
+                description={"suggested_value": cfg.get(CONF_DEADLINE_ENTITY, "")}): EntitySelector(
+                    EntitySelectorConfig(domain="input_datetime")),
+        })
+        return self.async_show_form(step_id="edit_deadline", data_schema=schema, errors=errors)
+
     async def async_step_edit_notify(
         self, user_input: dict | None = None
     ) -> FlowResult:
@@ -741,6 +816,10 @@ class OCPPChargerOptionsFlow(config_entries.OptionsFlow):
             new_data.update(self._logging_data)
         if hasattr(self, "_detection_data"):
             new_data.update(self._detection_data)
+        if hasattr(self, "_day_offer_data"):
+            new_data.update(self._day_offer_data)
+        if hasattr(self, "_deadline_data"):
+            new_data.update(self._deadline_data)
         self.hass.config_entries.async_update_entry(
             self._config_entry, data=new_data
         )

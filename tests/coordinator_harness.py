@@ -55,7 +55,7 @@ class FakeStore:
         return self.data
 
 
-def make_coordinator(store=None, *, vehicles=VEHICLES):
+def make_coordinator(store=None, *, vehicles=VEHICLES, entry_data=None):
     """Riktig OCPPCoordinator. hass.async_create_task kör coroutinen på den löpande loopen (kräver att testet
     kör inuti asyncio); hass.states.get ger None (ingen SOC-entitet finns)."""
     cls = coordinator_class()
@@ -71,6 +71,8 @@ def make_coordinator(store=None, *, vehicles=VEHICLES):
         "charger_id": "GaroCS-TEST", "port": 9000, "host": "127.0.0.1", "max_current": 16.0,
         "num_phases": "3", "notify_on_connect": True, "vehicles": [dict(v) for v in vehicles],
     }
+    if entry_data:   # Bug 60: installationsspecifika nycklar (närvaro, zoner, starttimme, sluttid-helper)
+        entry.data.update(entry_data)
     # Nyare HA (2026.x): DataUpdateCoordinator.__init__ anropar frame.report_usage() (varning om att config entry
     # inte skickas med), som kräver en riktig hass/loop. Den rapporten är irrelevant här – tysta den vid bygget.
     from unittest.mock import patch

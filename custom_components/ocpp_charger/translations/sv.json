@@ -174,13 +174,37 @@
         "data": {
           "plug_wait_seconds": "Väntetid för inkopplad-sensor (sekunder, 0 = vänta inte)"
         }
+      },
+      "edit_day_offer": {
+        "title": "Dagerbjudande",
+        "description": "Erbjud dagladdning när någon är hemma och dagen är billigare än natten. Tom lista = erbjudandet är av.",
+        "data": {
+          "presence_entities": "Närvaroentiteter (trackers/personer)",
+          "presence_zones": "Extra zoner som räknas som hemma",
+          "day_offer_earliest_hour": "Tidigaste timme för erbjudandet (0–23)"
+        },
+        "data_description": {
+          "presence_entities": "Tomt = dagerbjudandet är av",
+          "presence_zones": "State `home` räknas alltid; välj zoner som också ska räknas som hemma"
+        }
+      },
+      "edit_deadline": {
+        "title": "Sluttid-helper",
+        "description": "Välj den input_datetime-helper (typ Tid) som används för manuell sluttid.",
+        "data": {
+          "deadline_entity": "Sluttid-helper (input_datetime)"
+        },
+        "data_description": {
+          "deadline_entity": "Tomt = alltid automatisk sluttid"
+        }
       }
     },
     "error": {
       "rest_username_required": "Username is required for Basic auth",
       "rest_token_required": "Bearer token is required for Bearer auth",
       "plug_entity_invalid": "Inkopplad-sensorn måste vara en binary_sensor-entitet (binary_sensor.…)",
-      "wake_action_invalid": "Väckningsåtgärden måste vara en button-entitet (button.…) eller en tjänst i formen domän.tjänst"
+      "wake_action_invalid": "Väckningsåtgärden måste vara en button-entitet (button.…) eller en tjänst i formen domän.tjänst",
+      "deadline_entity_invalid": "Sluttid-helpern måste vara en input_datetime-entitet (input_datetime.…)"
     }
   }
 }

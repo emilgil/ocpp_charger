@@ -1,5 +1,12 @@
 # Ändringslogg – OCPP Charger
 
+## 2026-11-14: Bug 60 – Hårdkodade entiteter flyttade till options
+Närvaro-trackers, hemma-zoner, tidigaste timme för dagerbjudandet och sluttid-helpern låg som konstanter i `const.py`.
+- Nya options-steg `edit_day_offer` (`presence_entities`, `presence_zones`, `day_offer_earliest_hour`) och `edit_deadline` (`deadline_entity`, måste vara `input_datetime.*`).
+- Koordinatorn läser värdena ur `entry.data`; `_someone_home()` bygger hemma-states av `home` + valda zoners visningsnamn. Tom närvarolista = dagerbjudandet av (ny skip-orsak). Bug 39-lyssnaren registreras bara när helpern är vald.
+- **Befintliga installationer startar tomma** – efter deploy: options → fyll i båda menyvalen → Save and close. Tills dess: inget dagerbjudande och automatisk deadline.
+- **Tester:** `tests/test_bug60.py`, `tests/test_bug60_config_flow.py`; `make_coordinator(entry_data=…)` i harnessen. Hela sviten grön.
+
 ## 2026-11-01: Bug 59 – Söndagskväll räknades som helg: laddfönstret hamnade måndag kväll
 
 `compute_deadline()` avgjorde helg på **dagens** veckodag. Söndag kväll gav därför deadline = slutet av prisdatan (måndag 24:00) i stället för måndag 06:00,
